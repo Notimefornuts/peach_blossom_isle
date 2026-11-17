@@ -1,7 +1,6 @@
 """Draw the measured courtyard plan; input comes from export_layout.mjs."""
 import json, math, random, sys
 from pathlib import Path
-import cairosvg
 ROOT=Path(__file__).resolve().parents[1]
 data=json.loads(Path(sys.argv[1]).read_text())
 OUT=ROOT/'docs';OUT.mkdir(exist_ok=True)
@@ -22,11 +21,11 @@ def world_rect(x,z,w,d,fill,stroke='none',r=0):
  px,py=xy([x-w/2,z-d/2]);rect(px,py,w*S,d*S,fill,stroke,r)
 # Header and restrained editorial framing.
 txt(58,70,'桃花岛 · 双桥与曲水布局',38,weight='600')
-txt(60,108,'水从竹林流向棋席 · 木桥与石板桥各自连接两岸',20,fill='#6b8076')
+txt(60,108,'水从竹林流向棋席 · 石拱桥与石板桥各自连接两岸',20,fill='#6b8076')
 line([(60,133),(1540,133)],'#afc4ba',1)
 # Exact island outline, softened water rings and planted earth.
 for k in [1.10,1.055]:line([xy([p[0]*k,p[1]*k])for p in data['island']+[data['island'][0]]],'#bfd8d3',2,extra='opacity=".65"')
-poly([xy(p)for p in data['island']],'url(#turf)','#99a58c',14,'filter="url(#shadow)"')
+poly([xy(p)for p in data['island']],'url(#turf)','#99a58c',14)
 random.seed(41)
 for i in range(62):
  j=int(i/62*len(data['island']));p=data['island'][j];q=xy([p[0]*.96,p[1]*.96]);circ(*q,random.uniform(5,12),random.choice(['#a4b594','#acba98','#b8c59f']),extra='opacity=".65"')
@@ -95,13 +94,13 @@ for i in range(10):
 circ(*mp,.35*S,'#d7bd8a','#bca06c',2)
 for r in[5,9,13,17,21]:circ(*mp,r,'none','#c1a775',.8)
 l=data['lantern'];lp=xy([l['x'],l['z']]);poly([(lp[0]-21,lp[1]),(lp[0],lp[1]-21),(lp[0]+21,lp[1]),(lp[0],lp[1]+21)],'#a5b09f','#798d7c',2);rect(lp[0]-7,lp[1]-7,14,14,'#ead1a0','#8c947d',2)
-# Bridge footprint and timber courses, matched to the retained GLB.
-b=data['bridge'];bp=xy([b['x'],b['z']]);angle=math.degrees(math.atan2(b['axis'][1],b['axis'][0]));svg.append(f'<g transform="translate({bp[0]} {bp[1]}) rotate({angle})">')
-rect(-b['length']*S/2,-.39*S,b['length']*S,.78*S,'#b99262','#8e704d',5)
-for i in range(18):x=(i/17-.5)*b['length']*S*.92;line([(x,-.34*S),(x,.34*S)],'#896b49',1)
+# Bridge footprint and stone deck, matched to the supplied stone arch GLB.
+b=data['bridge'];bp=xy([b['x'],b['z']]);bw=b['length']*.4086/2;angle=math.degrees(math.atan2(b['axis'][1],b['axis'][0]));svg.append(f'<g transform="translate({bp[0]} {bp[1]}) rotate({angle})">')
+rect(-b['length']*S/2,-bw*S,b['length']*S,2*bw*S,'#d1d0bb','#9da999',5)
+for i in range(8):x=(i/7-.5)*b['length']*S*.90;line([(x,-bw*S*.9),(x,bw*S*.9)],'#abb2a0',1)
 for side in[-1,1]:
- line([(-b['length']*S/2,side*.52*S),(b['length']*S/2,side*.52*S)],'#99764f',6)
- for x in[-b['length']*S/2,b['length']*S/2]:circ(x,side*.52*S,5,'#c7a777','#8f724f')
+ line([(-b['length']*S/2,side*bw*S),(b['length']*S/2,side*bw*S)],'#9fa99b',6)
+ for x in[-b['length']*S/2,b['length']*S/2]:circ(x,side*bw*S,5,'#d0d2c2','#9fa99b')
 svg.append('</g>')
 # Low stone bridge: one real crossing from the house side to the seat side.
 s=data['stoneBridge'];sp=xy([s['x'],s['z']]);angle=math.degrees(math.atan2(s['axis'][1],s['axis'][0]));svg.append(f'<g transform="translate({sp[0]} {sp[1]}) rotate({angle})">')
@@ -132,7 +131,7 @@ txt(108,1000,'前方 / 湖面',17,'#648375')
 # Side notes explain the system rather than isolated model placements.
 rect(1210,174,334,792,'#faf7ee','#c5d0bf',18)
 txt(1240,221,'曲水与两条过水路',23,weight='600')
-rows=[('01','水流','竹林前起水，向左蜿蜒','在棋桌附近收束'),('02','木桥','棋桌旁斜跨水道','两端接入前后岸小径'),('03','石桥','主屋与打坐台之间','低矮石板横跨连续水面'),('04','游线','出屋、对弈、过木桥','沿前岸至竹林静修'),('05','回游','从打坐台过石板桥','可返回主屋入口平台')]
+rows=[('01','水流','竹林前起水，向左蜿蜒','在棋桌附近收束'),('02','石拱桥','棋桌旁斜跨水道','两端接入前后岸小径'),('03','石板桥','主屋与打坐台之间','低矮石板横跨连续水面'),('04','游线','出屋、对弈、过石拱桥','沿前岸至竹林静修'),('05','回游','从打坐台过石板桥','可返回主屋入口平台')]
 for i,(n,title,a,b_)in enumerate(rows):
  y=275+i*122;txt(1240,y,n,20,'#a4825f','500');txt(1283,y,title,23,weight='500');txt(1240,y+33,a,18,'#63796b');txt(1240,y+61,b_,18,'#63796b')
 txt(1240,931,'水流方向与实际动画一致',17,'#7a8c7b')
@@ -145,5 +144,11 @@ line([(623,1053),(665,1053)],'#417f80',2);txt(678,1061,'水流方向',17)
 txt(1540,1061,'同一套坐标用于俯视预览与三维场景',17,'#6b8076',anchor='end')
 svg.append('</g></svg>')
 p=OUT/'courtyard-layout.svg';p.write_text('\n'.join(svg))
-cairosvg.svg2png(url=str(p),write_to=str(OUT/'courtyard-layout.png'),output_width=2000,output_height=1375)
+try:
+ import cairosvg
+ cairosvg.svg2png(url=str(p),write_to=str(OUT/'courtyard-layout.png'),output_width=2000,output_height=1375)
+except ModuleNotFoundError:
+ import subprocess
+ subprocess.run(['inkscape',str(p),'--export-filename='+str(OUT/'courtyard-layout.png'),
+                 '--export-width=2000','--export-height=1375'],check=True)
 print(OUT/'courtyard-layout.png')

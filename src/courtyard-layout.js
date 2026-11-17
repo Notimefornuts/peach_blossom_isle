@@ -16,7 +16,7 @@ export const courtyardLayout = {
   paths: [
     { id:'entry-chess', name:'入口至棋席', width:.72,
       points:[[.96,1.52],[.10,1.66],[-.65,1.75],[-1.30,1.90]] },
-    { id:'chess-bridge', name:'棋席至木桥', width:.62,
+    { id:'chess-bridge', name:'棋席至石拱桥', width:.62,
       points:[[-1.30,1.90],[-1.08,2.05],[-.83,2.37],'bridge-house'] },
     { id:'waterside', name:'过桥沿水至静修', width:.64,
       points:['bridge-front',[-2.17,4.61],[-2.28,4.76],[-2.13,4.93],[-1.85,5.04],

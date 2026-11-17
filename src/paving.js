@@ -26,7 +26,7 @@ export function insideStone(poly,x,z){
 }
 export function buildStonePaving({root,seeds,groundHeight,meditation,bridge,stoneBridge}){
   const exclusions=[
-    {bridge, halfWidth:bridge.length*.547025/2+.025},
+    {bridge, halfWidth:bridge.width/2+.025},
     {bridge:stoneBridge, halfWidth:stoneBridge.width/2+.025}
   ];
   const filtered=[];

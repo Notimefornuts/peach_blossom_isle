@@ -1,8 +1,8 @@
 import * as THREE from '../vendor/three.module.js';
 
 const sources = globalThis.ISLE_MODELS ?? {
-  'bridge-high.glb': new URL('../assets/models/bridge-high.glb', import.meta.url).href,
-  'bridge-low.glb': new URL('../assets/models/bridge-low.glb', import.meta.url).href,
+  'stone-bridge-high.glb': new URL('../assets/models/stone-bridge-high.glb', import.meta.url).href,
+  'stone-bridge-low.glb': new URL('../assets/models/stone-bridge-low.glb', import.meta.url).href,
   'cushion-high.glb': new URL('../assets/models/cushion-high.glb', import.meta.url).href,
   'cushion-low.glb': new URL('../assets/models/cushion-low.glb', import.meta.url).href,
   'lantern-high.glb': new URL('../assets/models/lantern-high.glb', import.meta.url).href,
@@ -49,7 +49,7 @@ export function parseGardenModel(buffer) {
 export async function loadCourtyardModels(low) {
   const tier = low ? 'low' : 'high';
   const entries = await Promise.all(['bridge', 'cushion', 'lantern'].map(async name => {
-    const file = name + '-' + tier + '.glb';
+    const file = (name === 'bridge' ? 'stone-bridge' : name) + '-' + tier + '.glb';
     const response = await fetch(globalThis.ISLE_MODELS?.[file] ?? sources[file]);
     if (!response.ok) throw new Error('Could not load garden model: ' + name);
     return [name, parseGardenModel(await response.arrayBuffer())];

@@ -305,7 +305,10 @@ export function buildHouse({
   box(.69, 2.7875, -1.27, 3.04, 1.485, .105, plaster);
   box(-.83, 2.7875, -.135, .12, 1.485, 2.39, cream);
   windowWall('二层卧室正窗', 'x', 1.02, -.83, 2.20, 2.045, 3.53, .685, 2.42, 2.62, .96, 1, 'bubu', 3);
-  windowWall('二层卧室侧窗', 'z', 2.20, -1.27, 1.02, 2.045, 3.53, -.43, 2.61, .81, .77);
+  // The bedroom wall facing the bamboo is closed for now; the front lattice
+  // window remains, and the side plaster meets the existing corner posts.
+  box(2.20, 2.7875, -.125, .12, 1.485, 2.29, plaster);
+  box(2.20, 1.965, -.125, .16, .25, 2.29, dark);
   for (const x of [-.83, 2.20])
     for (const z of [-1.27, 1.02]) {
       box(x, 2.81, z, .125, 1.58, .125, dark);

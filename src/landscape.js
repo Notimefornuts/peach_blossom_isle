@@ -84,6 +84,30 @@ function rockGeometry(seed, slab = false) {
   return result;
 }
 
+// Wrap the same real stone texture around each shared low-poly rock profile.
+// The triangular mesh stays unchanged; only the trial copies receive UVs.
+function texturedRockGeometry(source) {
+  const result = source.clone(), p = result.attributes.position;
+  const uv = new Float32Array(p.count * 2);
+  for (let i = 0; i < p.count; i += 3) {
+    const a = V().fromBufferAttribute(p, i), b = V().fromBufferAttribute(p, i + 1),
+      c = V().fromBufferAttribute(p, i + 2);
+    const normal = b.clone().sub(a).cross(c.clone().sub(a)).normalize();
+    const points = [a, b, c];
+    const coords = Math.abs(normal.y) > .72
+      ? points.map(v => [v.x * .48 + .5, v.z * .48 + .5])
+      : points.map(v => [Math.atan2(v.z, v.x) / TAU + .5, v.y + .5]);
+    if (Math.abs(normal.y) <= .72) {
+      const values = coords.map(v => v[0]);
+      if (Math.max(...values) - Math.min(...values) > .5)
+        for (const v of coords) if (v[0] < .5) v[0] += 1;
+    }
+    coords.forEach(([u, v], j) => { uv[(i + j) * 2] = u; uv[(i + j) * 2 + 1] = v; });
+  }
+  result.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  return result;
+}
+
 function leafInto(positions, indices, base, tip, width, roll = 0) {
   const axis = tip.clone().sub(base);
   const side = new THREE.Vector3(-axis.z, 0, axis.x).normalize();
@@ -212,7 +236,8 @@ export function buildLandscape({
   channelSides,
   channelPoints,
   channelOutline,
-  courtyard
+  courtyard,
+  shoreSamples = false
 }) {
   const random = seeded(208816);
   const range = (a, b) => a + random() * (b - a);
@@ -223,6 +248,7 @@ export function buildLandscape({
   for (let i = 0; i < 5; i++) {
     shapes['bankRock' + i] = rockGeometry(314 + i * 17);
     shapes['pathSlab' + i] = rockGeometry(119 + i * 23, true);
+    if (shoreSamples) shapes['shoreSampleRock' + i] = texturedRockGeometry(shapes['bankRock' + i]);
   }
   for (let i = 0; i < 3; i++) shapes['shrub' + i] = shrubGeometry(88 + i * 27);
   shapes.rosette = rosetteGeometry(72);
@@ -316,7 +342,11 @@ export function buildLandscape({
   function coastalRock(x, z, size, height, rotation) {
     const y = height * .33;
     const kind = 'bankRock' + Math.floor(random() * 5);
-    put(kind, x, y, z, size, height, size * range(.63, .98), choose(rockColors),
+    // Only a short stretch at the front receives the trial, leaving adjoining
+    // shoreline available for an in-scene comparison.
+    const surfaceKind = shoreSamples && x > -3.7 && x < 1.8 && z > 3.15
+      ? kind.replace('bankRock', 'shoreSampleRock') : kind;
+    put(surfaceKind, x, y, z, size, height, size * range(.63, .98), choose(rockColors),
       range(-.10, .10), rotation, range(-.12, .12));
     if (random() < .82) {
       put(kind, x + .025, y + height * .36, z - .02, size * .78, height * .14,

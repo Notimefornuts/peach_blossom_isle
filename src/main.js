@@ -1,5 +1,6 @@
 import * as THREE from '../vendor/three.module.js';
 import { loadCourtyardModels } from './model-assets.js';
+import { loadShoreMaterial } from './shore-material.js';
 import {
   OrbitControls
 } from '../vendor/OrbitControls.js';
@@ -137,12 +138,16 @@ const register = (id, obj, anchor, {
     button: null
   });
 };
-const assets = await loadCourtyardModels(low);
+const [assets, shoreTextures] = await Promise.all([
+  loadCourtyardModels(low),
+  loadShoreMaterial(low)
+]);
 const ctx = {
     scene: world,
     low,
     register,
-    assets
+    assets,
+    shoreTextures
   },
   garden = buildGarden(ctx),
   house = buildHouse(ctx),

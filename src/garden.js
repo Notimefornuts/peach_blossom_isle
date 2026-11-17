@@ -28,7 +28,8 @@ export function buildGarden({
   scene,
   low,
   register,
-  assets
+  assets,
+  shoreTextures
 }) {
   const root = new THREE.Group();
   root.name = 'Island garden';
@@ -97,8 +98,12 @@ export function buildGarden({
   }
   const courtyard = createCourtyard();
   const { curve, points: ch, sides } = courtyard;
+  // The supplied stone arch has a different width from the former wood bridge.
+  // Use its actual dimensions when clearing the path around the railings.
+  const bridgeSize = assets?.bridge?.bounds.getSize(V());
+  courtyard.bridge.width = courtyard.bridge.length * (bridgeSize ? bridgeSize.z / bridgeSize.x : .4086);
   const landscape = buildLandscape({
-    root, low, put, beam, shapes, courtyard,
+    root, low, put, beam, shapes, courtyard, shoreSamples: !!shoreTextures,
     channelSides: sides, channelPoints: ch, channelOutline: courtyard.outline()
   });
   const rill = buildCourtyardWater({ root, courtyard, put, shapes });
@@ -110,7 +115,7 @@ export function buildGarden({
     side: THREE.DoubleSide
   });
   const bridgeMaterial = assetMaterial.clone();
-  bridgeMaterial.color.set('#dfcbb3');
+  bridgeMaterial.color.set('#ffffff');
   function placeImported(name, x, y, z, width, yaw = 0, squash = 1, glowMaterial = null) {
     const model = assets?.[name];
     if (!model) return [];
@@ -150,25 +155,6 @@ export function buildGarden({
     const s = THREE.MathUtils.clamp((along / (length * .94) + .5) * 24, 0, 24);
     const i = Math.floor(s);
     return THREE.MathUtils.lerp(bridgeProfile[i], bridgeProfile[Math.min(24, i + 1)], s - i) + .040;
-  }
-  // Shared box instances form real transverse deck boards over the supplied
-  // bridge shell; the narrow seams stay readable without texture maps.
-  for (let i = 0; i < 18; i++) {
-    const along = (i / 17 - .5) * courtyard.bridge.length * .92;
-    const p = courtyard.bridge.center.clone().addScaledVector(courtyard.bridge.axis, along);
-    const ahead = p.clone().addScaledVector(courtyard.bridge.axis, .035);
-    const behind = p.clone().addScaledVector(courtyard.bridge.axis, -.035);
-    const height = bridgeSurfaceAt(p.x, p.z) - .023;
-    const slope = (bridgeSurfaceAt(ahead.x, ahead.z) - bridgeSurfaceAt(behind.x, behind.z)) / .07;
-    const zAxis = V(courtyard.bridge.axis.x, slope, courtyard.bridge.axis.z).normalize();
-    const xAxis = V(courtyard.bridge.axis.z, 0, -courtyard.bridge.axis.x).normalize();
-    const yAxis = zAxis.clone().cross(xAxis).normalize();
-    pose.position.set(p.x, height, p.z);
-    pose.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis));
-    pose.scale.set(.70, .025, courtyard.bridge.length * .92 / 17 * .965);
-    pose.updateMatrix();
-    if (!bags.has('box')) bags.set('box', []);
-    bags.get('box').push([pose.matrix.clone(), ['#a5794e','#ac8258','#b08a60','#a98055'][i%4]]);
   }
   function stoneSurfaceAt(x, z) {
     const seat=courtyard.meditation, d=Math.hypot(x-seat.x,z-seat.z);
@@ -452,8 +438,16 @@ export function buildGarden({
         '#f6dfd4'
       ]), 0, rand() * TAU);
   }
+  const shoreSurface = shoreTextures ? surface.clone() : null;
+  if (shoreSurface) {
+    shoreSurface.map = shoreTextures.color;
+    shoreSurface.normalMap = shoreTextures.normal;
+    shoreSurface.normalScale.set(.18, .18);
+    shoreSurface.roughness = .98;
+  }
   for (const [kind, list] of bags) {
-    const m = new THREE.InstancedMesh(shapes[kind], surface, list.length);
+    const m = new THREE.InstancedMesh(shapes[kind],
+      kind.startsWith('shoreSampleRock') ? shoreSurface : surface, list.length);
     m.name = 'Garden ' + kind;
     list.forEach(([mx, c], i) => {
       m.setMatrixAt(i, mx);
