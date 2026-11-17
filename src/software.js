@@ -19,6 +19,49 @@ function srgb(linear) {
   return gamma[clamp((linear * 4096) | 0, 0, 8192)]
 }
 
+// The same value noise the rock shader uses, so the CPU fallback scatters its
+// moss in the same places as the GPU path.
+function rockHash(x, y, z) {
+  let px = (x * .3183099 + .71) % 1,
+    py = (y * .3183099 + .113) % 1,
+    pz = (z * .3183099 + .419) % 1;
+  px = (px < 0 ? px + 1 : px) * 17;
+  py = (py < 0 ? py + 1 : py) * 17;
+  pz = (pz < 0 ? pz + 1 : pz) * 17;
+  const v = (px * py * pz * (px + py + pz)) % 1;
+  return v < 0 ? v + 1 : v;
+}
+
+function rockNoise(x, y, z) {
+  const ix = Math.floor(x), iy = Math.floor(y), iz = Math.floor(z);
+  let fx = x - ix, fy = y - iy, fz = z - iz;
+  fx = fx * fx * (3 - 2 * fx);
+  fy = fy * fy * (3 - 2 * fy);
+  fz = fz * fz * (3 - 2 * fz);
+  const n000 = rockHash(ix, iy, iz),
+    n100 = rockHash(ix + 1, iy, iz),
+    n010 = rockHash(ix, iy + 1, iz),
+    n110 = rockHash(ix + 1, iy + 1, iz),
+    n001 = rockHash(ix, iy, iz + 1),
+    n101 = rockHash(ix + 1, iy, iz + 1),
+    n011 = rockHash(ix, iy + 1, iz + 1),
+    n111 = rockHash(ix + 1, iy + 1, iz + 1);
+  const lx0 = n000 + (n100 - n000) * fx,
+    lx1 = n010 + (n110 - n010) * fx,
+    lx2 = n001 + (n101 - n001) * fx,
+    lx3 = n011 + (n111 - n011) * fx;
+  const ly0 = lx0 + (lx1 - lx0) * fy,
+    ly1 = lx2 + (lx3 - lx2) * fy;
+  return ly0 + (ly1 - ly0) * fz;
+}
+
+// sRGB byte to linear float, matching the GPU's colour management.
+const toLinear = new Float32Array(256);
+for (let i = 0; i < 256; i++) {
+  const c = i / 255;
+  toLinear[i] = c <= .04045 ? c / 12.92 : ((c + .055) / 1.055) ** 2.4;
+}
+
 function mapFor(t) {
   if (!t) return null;
   if (textures.has(t)) return textures.get(t);
@@ -56,6 +99,20 @@ function mapFor(t) {
       width: w,
       height: h
     });
+  }
+  // The rock maps are authored in sRGB but consumed as linear factors, so the
+  // byte data is converted once here to match the GPU path.
+  if (t.userData?.linearize) {
+    const linearize = data => {
+      for (let i = 0; i < data.length; i += 4) {
+        data[i] = toLinear[data[i]] * 255;
+        data[i + 1] = toLinear[data[i + 1]] * 255;
+        data[i + 2] = toLinear[data[i + 2]] * 255;
+      }
+    };
+    linearize(map.data);
+    for (const level of map.levels) linearize(level.data);
+    map.linear = true;
   }
   textures.set(t, map);
   return map;
@@ -134,10 +191,21 @@ function record(obj, instance) {
         texture: mapFor(m.map),
         alphaTest: m.alphaTest || 0,
         depthWrite: m.depthWrite !== false,
-        opacity: m.opacity ?? 1
+        opacity: m.opacity ?? 1,
+        // The rock material keeps its shading linear so the albedo map can be
+        // multiplied in linear space, exactly like the GPU shader does.
+        linearLight: !!m.userData?.rock
       }
     };
   if (obj.isInstancedMesh && obj.instanceColor) obj.getColorAt(instance, rec.color);
+
+  // The rock shader paints the moss from the per instance growth value and the
+  // per vertex crevice term; the CPU path reads the same two numbers.
+  if (g.aRockData && instance >= 0) rec.rockGrowth = g.aRockData.array[instance * 4 + 3];
+  if (g.aCavity) {
+    rec.cavity = new Float32Array(N);
+    for (let k = 0; k < N; k++) rec.cavity[k] = g.aCavity.getX(k);
+  }
   if (g.uv)
     for (let k = 0; k < N; k++) {
       rec.screen[8 * k + 6] = g.uv.getX(k);
@@ -222,18 +290,44 @@ function shade(r, lights, shadow) {
     const x = wp[i],
       y = wp[i + 1],
       z = wp[i + 2],
-      cr = br * (m.vertexColors && color ? color[i] : 1),
-      cg = bg * (m.vertexColors && color ? color[i + 1] : 1),
-      cb = bb * (m.vertexColors && color ? color[i + 2] : 1);
+      cr0 = br * (m.vertexColors && color ? color[i] : 1),
+      cg0 = bg * (m.vertexColors && color ? color[i + 1] : 1),
+      cb0 = bb * (m.vertexColors && color ? color[i + 2] : 1);
     if (m.isMeshBasicMaterial || isWater) {
-      s[k + 3] = srgb(cr);
-      s[k + 4] = srgb(cg);
-      s[k + 5] = srgb(cb);
+      s[k + 3] = srgb(cr0);
+      s[k + 4] = srgb(cg0);
+      s[k + 5] = srgb(cb0);
       continue
     }
     const nx = n[i],
       ny = n[i + 1],
       nz = n[i + 2];
+    // Moss grows on the upward faces of the stone, exactly as the GPU shader
+    // paints it, so both paths show the same green caps.
+    let cr = cr0, cg = cg0, cb = cb0;
+    if (r.rockGrowth !== undefined) {
+      const up = clamp((ny - .22) / .64, 0, 1);
+      const cavity = r.cavity ? r.cavity[i / 3] : 0;
+      const blotch = rockNoise(x * 1.45, y * 1.45, z * 1.45);
+      const patch = rockNoise(x * 3.6 + 11, y * 3.6 + 11, z * 3.6 + 11);
+      const clump = rockNoise(x * 8.4 + 57, y * 8.4 + 57, z * 8.4 + 57);
+      const grain = rockNoise(x * 13, y * 13, z * 13);
+      // The same three scale blend as the GPU shader decides where the growth
+      // can take hold.
+      const field = blotch * .34 + patch * .38 + clump * .28;
+      let mask = clamp((field - .38) / (.64 - .38), 0, 1);
+      mask = mask * mask * (3 - 2 * mask);
+      let moss = clamp(up * up * (3 - 2 * up) * mask * r.rockGrowth, 0, 1);
+      moss = clamp(moss + cavity * .5 * r.rockGrowth, 0, 1);
+      moss = clamp((moss + (grain - .5) * .34 - .34) / (.58 - .34), 0, 1);
+      moss = moss * moss * (3 - 2 * moss);
+      // The CPU path applies the albedo map after the shading, so the growth
+      // is pre-divided by the mean of that map to land on the same green.
+      const tone = (.58 + .42 * (1 - cavity)) * 1.787;
+      cr = cr0 * (1 - moss) + .155 * moss * tone;
+      cg = cg0 * (1 - moss) + .539 * moss * tone;
+      cb = cb0 * (1 - moss) + .052 * moss * tone;
+    }
     let nd = nx * dir.x + ny * dir.y + nz * dir.z;
     if (blossoms) nd = clamp(.39 + .30 * Math.abs(nd) + .22 * (y - 4), .16, 1);
     let lit = 1;
@@ -268,9 +362,17 @@ function shade(r, lights, shadow) {
       lg += p.color.g * light;
       lb += p.color.b * light;
     }
-    s[k + 3] = srgb(cr * lr + em.r * ei * .72);
-    s[k + 4] = srgb(cg * lg + em.g * ei * .72);
-    s[k + 5] = srgb(cb * lb + em.b * ei * .72);
+    if (r.paint.linearLight) {
+      // The rock path keeps the lit colour linear so the albedo map can be
+      // multiplied in linear space, exactly like the GPU shader does.
+      s[k + 3] = cr * lr + em.r * ei * .72;
+      s[k + 4] = cg * lg + em.g * ei * .72;
+      s[k + 5] = cb * lb + em.b * ei * .72;
+    } else {
+      s[k + 3] = srgb(cr * lr + em.r * ei * .72);
+      s[k + 4] = srgb(cg * lg + em.g * ei * .72);
+      s[k + 5] = srgb(cb * lb + em.b * ei * .72);
+    }
   }
 }
 // Sample the same directional shadow map on the display surface beneath the

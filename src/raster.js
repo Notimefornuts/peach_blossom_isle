@@ -1,5 +1,15 @@
+const clampByte = v => v < 0 ? 0 : v > 255 ? 255 : v | 0;
+
 // Orthographic scan conversion. Vertex layout: screen x/y, depth, lit RGB
 // (0–255), texture u/v. Frame color is straight-alpha RGBA ImageData.
+// Linear byte value to sRGB byte, used when the shading stays in linear
+// space until the final encode.
+const linearToSrgb = new Uint8ClampedArray(256);
+for (let i = 0; i < 256; i++) {
+  const l = i / 255;
+  linearToSrgb[i] = Math.round(255 * (l <= .0031308 ? 12.92 * l : 1.055 * l ** (1 / 2.4) - .055));
+}
+
 export function rasterTriangle(frame, vertices, ia, ib, ic, material) {
   ia *= 8;
   ib *= 8;
@@ -173,9 +183,20 @@ export function rasterTriangle(frame, vertices, ia, ib, ic, material) {
         const t = (ty * tw + tx) * 4;
         alpha *= texels[t + 3] / 255;
         if (alpha <= 0 || alpha < threshold) continue;
-        R *= texels[t] / 255;
-        G *= texels[t + 1] / 255;
-        B *= texels[t + 2] / 255;
+        if (material.linearLight) {
+          // The lit colour is still linear, so the linear map multiplies in
+          // directly and only the result is encoded to sRGB.
+          R *= texels[t] / 255;
+          G *= texels[t + 1] / 255;
+          B *= texels[t + 2] / 255;
+          R = linearToSrgb[clampByte(R * 255)];
+          G = linearToSrgb[clampByte(G * 255)];
+          B = linearToSrgb[clampByte(B * 255)];
+        } else {
+          R *= texels[t] / 255;
+          G *= texels[t + 1] / 255;
+          B *= texels[t + 2] / 255;
+        }
       }
       const c = pixel * 4;
       if (alpha >= .9999 || color[c + 3] === 0) {

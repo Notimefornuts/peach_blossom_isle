@@ -1,0 +1,80 @@
+<!doctype html><html><head><meta charset="utf-8"><title>rock lab</title>
+<style>html,body{margin:0;background:#20242a;color:#ddd;font:12px monospace}canvas{display:block}</style>
+</head><body><div id="out"></div>
+<script type="module">
+import * as THREE from '../vendor/three.module.js';
+import { rockGeometry } from '../src/landscape.js';
+import { createRockMaterial, loadRockTextures, ROCK_TINT_GAIN } from '../src/rock-material.js';
+
+const params = new URLSearchParams(location.search);
+const canvas = document.createElement('canvas');
+canvas.width = 1200; canvas.height = 620;
+document.getElementById('out').append(canvas);
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#2b3138');
+const sky = new THREE.HemisphereLight('#fff7e9', '#aabbb6', 1.70);
+const sun = new THREE.DirectionalLight('#ffe9c7', 2.0);
+sun.position.set(-7, 13, 8);
+sun.castShadow = true;
+sun.shadow.mapSize.set(1024, 1024);
+Object.assign(sun.shadow.camera, { left: -11, right: 11, top: 12, bottom: -10, near: .2, far: 45 });
+sun.shadow.normalBias = .026;
+sun.shadow.bias = -.00035;
+scene.add(sky, sun);
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(60, 60),
+  new THREE.MeshStandardMaterial({ color: '#8d9b7f', roughness: 1 }));
+ground.rotation.x = -Math.PI / 2; ground.position.y = -.5; ground.receiveShadow = true;
+scene.add(ground);
+const camera = new THREE.OrthographicCamera(-6, 6, 3.1, -3.1, .1, 150);
+camera.position.set(4.2, 5.6, 8.6);
+camera.lookAt(0, .1, 0);
+
+const textures = await loadRockTextures(4);
+const material = createRockMaterial(textures, false);
+if (params.has('gain')) material.userData.gain = Number(params.get('gain'));
+const plain = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: .94, side: THREE.DoubleSide });
+
+const rockColors = ['#c2c6bb', '#cdd0c5', '#b4bab1', '#d4d5c8', '#bec3b8', '#c8cabd'];
+const mossColors = ['#c0c4b7', '#c9ccc0', '#b8bdb2', '#d0d1c4', '#c4c7ba'];
+const usePlain = params.has('plain');
+const mat = usePlain ? plain : material;
+if (!usePlain) {
+  // expose knobs
+  const u = material.userData;
+  material.onBeforeCompile = material.onBeforeCompile;
+}
+const kinds = [];
+for (let i = 0; i < 8; i++) kinds.push(rockGeometry(314 + i * 37, false, 1));
+const shape = kinds[0];
+const tint = new THREE.Color();
+const offsets = [];
+let seed = 12345;
+const rnd = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 4294967296; };
+const data = new Float32Array(8 * 4);
+for (let i = 0; i < 8; i++) {
+  data[i * 4] = rnd(); data[i * 4 + 1] = rnd();
+  data[i * 4 + 2] = .86 + rnd() * .30; data[i * 4 + 3] = i < 4 ? .55 : 1;
+}
+shape.setAttribute('aRockData', new THREE.InstancedBufferAttribute(data, 4));
+const mesh = new THREE.InstancedMesh(shape, mat, 8);
+mesh.castShadow = mesh.receiveShadow = true;
+const pose = new THREE.Object3D();
+for (let i = 0; i < 8; i++) {
+  pose.position.set((i - 3.5) * 1.35, .3, i < 4 ? .35 : -.35);
+  pose.scale.set(.62, .95, .55);
+  pose.rotation.set(.05, i * .7, .04);
+  pose.updateMatrix();
+  mesh.setMatrixAt(i, pose.matrix);
+  mesh.setColorAt(i, tint.set(i < 4 ? rockColors[i % rockColors.length] : mossColors[i % mossColors.length])
+    .multiplyScalar(usePlain ? 1 : ROCK_TINT_GAIN));
+}
+mesh.instanceMatrix.needsUpdate = true;
+mesh.instanceColor.needsUpdate = true;
+scene.add(mesh);
+renderer.render(scene, camera);
+window.__ready = true;
+</script></body></html>

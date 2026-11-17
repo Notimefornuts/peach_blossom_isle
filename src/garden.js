@@ -1,5 +1,6 @@
 import * as THREE from '../vendor/three.module.js';
 import { createCourtyard, buildCourtyardWater, WATER, BED } from './courtyard.js';
+import { createRockMaterial, ROCK_TINT_GAIN } from './rock-material.js';
 import {
   buildLandscape,
   shoreRadius
@@ -29,7 +30,7 @@ export function buildGarden({
   low,
   register,
   assets,
-  shoreTextures
+  rockTextures
 }) {
   const root = new THREE.Group();
   root.name = 'Island garden';
@@ -63,14 +64,16 @@ export function buildGarden({
   });
   let skipCane = false;
 
-  function put(kind, x, y, z, sx, sy, sz, tint, rx = 0, ry = 0, rz = 0) {
+  // The trailing moss value tells the rock shader how much growth this
+  // particular stone carries.
+  function put(kind, x, y, z, sx, sy, sz, tint, rx = 0, ry = 0, rz = 0, moss = 0) {
     if (skipCane) return;
     pose.position.set(x, y, z);
     pose.scale.set(sx, sy, sz);
     pose.rotation.set(rx, ry, rz);
     pose.updateMatrix();
     if (!bags.has(kind)) bags.set(kind, []);
-    bags.get(kind).push([pose.matrix.clone(), tint]);
+    bags.get(kind).push([pose.matrix.clone(), tint, moss]);
   }
 
   function beam(a, b, r, c, kind = 'cylinder', depth = r) {
@@ -103,7 +106,7 @@ export function buildGarden({
   const bridgeSize = assets?.bridge?.bounds.getSize(V());
   courtyard.bridge.width = courtyard.bridge.length * (bridgeSize ? bridgeSize.z / bridgeSize.x : .4086);
   const landscape = buildLandscape({
-    root, low, put, beam, shapes, courtyard, shoreSamples: !!shoreTextures,
+    root, low, put, beam, shapes, courtyard,
     channelSides: sides, channelPoints: ch, channelOutline: courtyard.outline()
   });
   const rill = buildCourtyardWater({ root, courtyard, put, shapes });
@@ -438,21 +441,36 @@ export function buildGarden({
         '#f6dfd4'
       ]), 0, rand() * TAU);
   }
-  const shoreSurface = shoreTextures ? surface.clone() : null;
-  if (shoreSurface) {
-    shoreSurface.map = shoreTextures.color;
-    shoreSurface.normalMap = shoreTextures.normal;
-    shoreSurface.normalScale.set(.18, .18);
-    shoreSurface.roughness = .98;
-  }
+  // Every stone shares one weathered material; the plants keep the plain one.
+  const rockMaterial = createRockMaterial(rockTextures, low);
+  const rockRandom = randomSource(90210);
+  const tintProbe = new THREE.Color();
+  const isRockKind = kind => kind.startsWith('bankRock') || kind.startsWith('pathSlab');
   for (const [kind, list] of bags) {
-    const m = new THREE.InstancedMesh(shapes[kind],
-      kind.startsWith('shoreSampleRock') ? shoreSurface : surface, list.length);
+    const rocky = isRockKind(kind);
+    const m = new THREE.InstancedMesh(shapes[kind], rocky ? rockMaterial : surface, list.length);
     m.name = 'Garden ' + kind;
-    list.forEach(([mx, c], i) => {
+    list.forEach(([mx, c, moss], i) => {
       m.setMatrixAt(i, mx);
-      m.setColorAt(i, color.set(c));
+      // The detail map darkens the stone, so the tint is lifted to keep the
+      // island's established value.
+      m.setColorAt(i, color.set(c).multiplyScalar(rocky ? ROCK_TINT_GAIN : 1));
     });
+    if (rocky) {
+      // A per instance offset and scale break the shared tiling, so two
+      // neighbouring boulders never show the same patch of stone.
+      const data = new Float32Array(list.length * 4);
+      for (let i = 0; i < list.length; i++) {
+        tintProbe.set(list[i][1]);
+        const growth = list[i][2] > 0 ? list[i][2]
+          : (tintProbe.g > tintProbe.r * 1.08 && tintProbe.g > tintProbe.b * 1.08 ? .9 : .3);
+        data[i * 4] = rockRandom();
+        data[i * 4 + 1] = rockRandom();
+        data[i * 4 + 2] = .86 + rockRandom() * .30;
+        data[i * 4 + 3] = growth;
+      }
+      shapes[kind].setAttribute('aRockData', new THREE.InstancedBufferAttribute(data, 4));
+    }
     m.castShadow = true;
     m.receiveShadow = true;
     m.computeBoundingSphere();

@@ -3,6 +3,8 @@ import { buildStonePaving, insideStone } from './paving.js';
 
 const TAU = Math.PI * 2;
 const GROUND = .85;
+const ROCK_SHAPES = 8;
+const SLAB_SHAPES = 6;
 const V = (x, y, z) => new THREE.Vector3(x, y, z);
 
 function seeded(seed) {
@@ -40,34 +42,66 @@ function geometry(positions, indices, colors, uv) {
   return result;
 }
 
-// Shared weathered profiles have broad faces, broken corners and sloping shoulders.
-function rockGeometry(seed, slab = false) {
-  const random = seeded(seed);
-  const sides = 7;
+// Smooth value noise used to erode the boulders. The field is continuous, so
+// neighbouring facets stay welded while the silhouette loses its blockiness.
+function noiseField(seed) {
+  const hash = (x, y, z) => {
+    let h = (seed ^ Math.imul(x, 374761393) ^ Math.imul(y, 668265263) ^ Math.imul(z, 1442695041)) >>> 0;
+    h = Math.imul(h ^ (h >>> 13), 1274126177);
+    return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+  };
+  return (x, y, z) => {
+    const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z);
+    let xf = x - xi, yf = y - yi, zf = z - zi;
+    xf = xf * xf * (3 - 2 * xf);
+    yf = yf * yf * (3 - 2 * yf);
+    zf = zf * zf * (3 - 2 * zf);
+    const corner = (dx, dy, dz) => hash(xi + dx, yi + dy, zi + dz);
+    const x00 = corner(0, 0, 0) + (corner(1, 0, 0) - corner(0, 0, 0)) * xf;
+    const x10 = corner(0, 1, 0) + (corner(1, 1, 0) - corner(0, 1, 0)) * xf;
+    const x01 = corner(0, 0, 1) + (corner(1, 0, 1) - corner(0, 0, 1)) * xf;
+    const x11 = corner(0, 1, 1) + (corner(1, 1, 1) - corner(0, 1, 1)) * xf;
+    const y0 = x00 + (x10 - x00) * yf;
+    const y1 = x01 + (x11 - x01) * yf;
+    return y0 + (y1 - y0) * zf;
+  };
+}
+
+// A weathered boulder: rounded shoulders, a domed crown and an eroded skin,
+// instead of the square blocks the shoreline used to show.
+// One rounded mass of stone. The reference boulders are clusters of these
+// leaning against each other, so the mass is generated on its own and later
+// assembled into a pile.
+function rockLump(random, noise, sides, rings, erode) {
+  const phase = [random() * TAU, random() * TAU, random() * TAU];
   const outline = Array.from({
     length: sides
-  }, (_, i) => ({
-    angle: i * TAU / sides + (random() - .5) * .15,
-    radius: .77 + random() * .23
-  }));
+  }, (_, i) => {
+    const angle = i * TAU / sides + (random() - .5) * .16;
+    // Low frequency wobble keeps the silhouette organic rather than round.
+    const wobble = .080 * Math.sin(angle * 2 + phase[0]) +
+      .052 * Math.sin(angle * 3.3 + phase[1]) +
+      .026 * Math.sin(angle * 5.9 + phase[2]);
+    return {
+      angle,
+      radius: 1 + (random() - .5) * .18 + wobble
+    };
+  });
   const positions = [],
     indices = [];
-  const rings = slab ? [
-    [.83, -.5],
-    [1, .03],
-    [.90, .43],
-    [.25, .5]
-  ] : [
-    [.68, -.5],
-    [.99, -.19],
-    [1, .10],
-    [.72, .43],
-    [.22, .51]
-  ];
   for (const [scale, y] of rings) {
     for (const p of outline) {
-      positions.push(Math.cos(p.angle) * p.radius * scale + y * .10,
-        y + (slab ? .015 : .045) * random(), Math.sin(p.angle) * p.radius * scale);
+      const r = p.radius * scale,
+        cx = Math.cos(p.angle),
+        cz = Math.sin(p.angle);
+      let x = cx * r,
+        yy = y,
+        z = cz * r;
+      const n = noise(x * 2.05, yy * 2.05, z * 2.05) - .5;
+      x += cx * n * erode * 2;
+      z += cz * n * erode * 2;
+      yy += n * erode * .9;
+      positions.push(x, yy, z);
     }
   }
   for (let ring = 0; ring < rings.length - 1; ring++) {
@@ -78,34 +112,195 @@ function rockGeometry(seed, slab = false) {
     }
   }
   const top = (rings.length - 1) * sides;
-  for (let i = 1; i < sides - 1; i++) indices.push(top, top + i + 1, top + i);
-  const result = geometry(positions, indices).toNonIndexed();
-  result.computeVertexNormals();
-  return result;
+  const crown = positions.length / 3;
+  positions.push(0, rings[rings.length - 1][1] + .07, 0);
+  for (let i = 0; i < sides; i++) indices.push(crown, top + (i + 1) % sides, top + i);
+  const base = positions.length / 3;
+  positions.push(0, rings[0][1] - .06, 0);
+  for (let i = 0; i < sides; i++) indices.push(base, i, (i + 1) % sides);
+  return { positions, indices };
 }
 
-// Wrap the same real stone texture around each shared low-poly rock profile.
-// The triangular mesh stays unchanged; only the trial copies receive UVs.
-function texturedRockGeometry(source) {
-  const result = source.clone(), p = result.attributes.position;
-  const uv = new Float32Array(p.count * 2);
-  for (let i = 0; i < p.count; i += 3) {
-    const a = V().fromBufferAttribute(p, i), b = V().fromBufferAttribute(p, i + 1),
-      c = V().fromBufferAttribute(p, i + 2);
-    const normal = b.clone().sub(a).cross(c.clone().sub(a)).normalize();
-    const points = [a, b, c];
-    const coords = Math.abs(normal.y) > .72
-      ? points.map(v => [v.x * .48 + .5, v.z * .48 + .5])
-      : points.map(v => [Math.atan2(v.z, v.x) / TAU + .5, v.y + .5]);
-    if (Math.abs(normal.y) <= .72) {
-      const values = coords.map(v => v[0]);
-      if (Math.max(...values) - Math.min(...values) > .5)
-        for (const v of coords) if (v[0] < .5) v[0] += 1;
+// A weathered boulder: a pile of rounded masses leaning on each other, the
+// way the reference stones are built, instead of one square block.
+export function rockGeometry(seed, slab = false, detail = 1) {
+  const random = seeded(seed);
+  const noise = noiseField(seed);
+  const sides = slab ? 9 : (detail ? 11 : 9);
+  const rings = slab ? [
+      [.76, -.28],
+      [1, -.13],
+      [.99, .05],
+      [.88, .18],
+      [.60, .26]
+    ] : detail ? [
+      [.60, -.50],
+      [.91, -.33],
+      [1, -.08],
+      [.97, .15],
+      [.87, .33],
+      [.66, .46],
+      [.40, .53]
+    ] : [
+      [.64, -.48],
+      [.94, -.27],
+      [1, .01],
+      [.90, .28],
+      [.62, .47]
+    ];
+  const erode = slab ? .055 : .095;
+  const lumps = [];
+  if (slab) {
+    lumps.push({ mass: rockLump(random, noise, sides, rings, erode), scale: [1, 1, 1], offset: [0, 0, 0], spin: 0 });
+  } else {
+    // The lowest mass carries the pile, the others lean on it.
+    lumps.push({
+      mass: rockLump(random, noise, sides, rings, erode),
+      scale: [1, 1, 1],
+      offset: [0, 0, 0],
+      spin: random() * TAU
+    });
+    // The upper masses are large enough to lean on the foot of the pile and
+    // read as one weathered block, not as separate pebbles balanced on top.
+    const upper = 1 + Math.floor(random() * 2);
+    for (let i = 0; i < upper; i++) {
+      const s = .74 + random() * .24;
+      const lean = random() * TAU;
+      lumps.push({
+        mass: rockLump(random, noise, sides - 1, rings, erode),
+        scale: [s, s * (.82 + random() * .20), s],
+        offset: [Math.cos(lean) * (.16 + random() * .30), .26 + random() * .30,
+          Math.sin(lean) * (.16 + random() * .30)],
+        spin: random() * TAU
+      });
     }
-    coords.forEach(([u, v], j) => { uv[(i + j) * 2] = u; uv[(i + j) * 2 + 1] = v; });
+    if (detail && random() > .40) {
+      const s = .56 + random() * .22;
+      const lean = random() * TAU;
+      lumps.push({
+        mass: rockLump(random, noise, sides - 2, rings, erode),
+        scale: [s, s * .88, s],
+        offset: [Math.cos(lean) * (.42 + random() * .30), .06 + random() * .22,
+          Math.sin(lean) * (.42 + random() * .30)],
+        spin: random() * TAU
+      });
+    }
   }
-  result.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
-  return result;
+  const positions = [],
+    indices = [],
+    cavities = [];
+  for (const lump of lumps) {
+    const base = positions.length / 3,
+      cos = Math.cos(lump.spin),
+      sin = Math.sin(lump.spin);
+    for (let i = 0; i < lump.mass.positions.length; i += 3) {
+      const x = lump.mass.positions[i] * lump.scale[0],
+        y = lump.mass.positions[i + 1] * lump.scale[1],
+        z = lump.mass.positions[i + 2] * lump.scale[2];
+      positions.push(x * cos - z * sin + lump.offset[0], y + lump.offset[1], x * sin + z * cos + lump.offset[2]);
+    }
+    for (const index of lump.mass.indices) indices.push(base + index);
+  }
+  // A crevice term: a point that lies inside another mass is shadowed, which
+  // is where the reference boulders carry their deepest moss and darkest line.
+  const centres = lumps.map(lump => ({
+    x: lump.offset[0],
+    y: lump.offset[1],
+    z: lump.offset[2],
+    r: Math.max(lump.scale[0], lump.scale[1], lump.scale[2]) * .94
+  }));
+  const owner = [];
+  for (let l = 0; l < lumps.length; l++) {
+    const count = lumps[l].mass.positions.length / 3;
+    for (let i = 0; i < count; i++) owner.push(l);
+  }
+  for (let i = 0; i < positions.length / 3; i++) {
+    const x = positions[i * 3], y = positions[i * 3 + 1], z = positions[i * 3 + 2];
+    let buried = 0;
+    for (let l = 0; l < centres.length; l++) {
+      if (l === owner[i]) continue;
+      const c = centres[l];
+      const d = Math.hypot(x - c.x, (y - c.y) * .82, z - c.z) / c.r;
+      buried += Math.max(0, 1 - d) ** 1.4;
+    }
+    // The foot of the pile also sits in the shade of the stone above it.
+    const foot = Math.max(0, 1 - (y + .58) * 1.7);
+    cavities.push(Math.min(1, buried * .82 + foot * .34));
+  }
+  const indexed = new THREE.BufferGeometry();
+  indexed.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  indexed.setAttribute('aCavity', new THREE.Float32BufferAttribute(cavities, 1));
+  indexed.setIndex(indices);
+  indexed.computeVertexNormals();
+  const result = indexed.toNonIndexed();
+  const smooth = result.attributes.normal.array.slice();
+  const flat = new Float32Array(smooth.length);
+  const position = result.attributes.position;
+  for (let i = 0; i < position.count; i += 3) {
+    const ax = position.getX(i), ay = position.getY(i), az = position.getZ(i);
+    const ux = position.getX(i + 1) - ax, uy = position.getY(i + 1) - ay,
+      uz = position.getZ(i + 1) - az;
+    const vx = position.getX(i + 2) - ax, vy = position.getY(i + 2) - ay,
+      vz = position.getZ(i + 2) - az;
+    let nx = uy * vz - uz * vy,
+      ny = uz * vx - ux * vz,
+      nz = ux * vy - uy * vx;
+    const length = Math.hypot(nx, ny, nz) || 1;
+    nx /= length;
+    ny /= length;
+    nz /= length;
+    for (let k = 0; k < 3; k++) {
+      flat[(i + k) * 3] = nx;
+      flat[(i + k) * 3 + 1] = ny;
+      flat[(i + k) * 3 + 2] = nz;
+    }
+  }
+  // The stone is shaded with the averaged normal so it reads as weathered
+  // rock; the carved facet normal is kept for the shader to blend in.
+  result.setAttribute('normal', new THREE.BufferAttribute(smooth, 3));
+  result.setAttribute('aFacetNormal', new THREE.BufferAttribute(flat, 3));
+  return boxProjected(result);
+}
+
+// Per facet box projection. The WebGL path samples the maps in world space,
+// so these UVs only serve the software renderer and keep every facet free of
+// stretching in the low device path as well.
+function boxProjected(source, scale = 1) {
+  const p = source.attributes.position,
+    uv = new Float32Array(p.count * 2);
+  const edge = new THREE.Vector3(),
+    face = new THREE.Vector3();
+  for (let i = 0; i < p.count; i += 3) {
+    const ax = p.getX(i), ay = p.getY(i), az = p.getZ(i);
+    const bx = p.getX(i + 1), by = p.getY(i + 1), bz = p.getZ(i + 1);
+    const cx = p.getX(i + 2), cy = p.getY(i + 2), cz = p.getZ(i + 2);
+    edge.set(bx - ax, by - ay, bz - az);
+    face.set(cx - ax, cy - ay, cz - az);
+    edge.cross(face);
+    const nx = Math.abs(edge.x),
+      ny = Math.abs(edge.y),
+      nz = Math.abs(edge.z);
+    for (let k = 0; k < 3; k++) {
+      const x = p.getX(i + k),
+        y = p.getY(i + k),
+        z = p.getZ(i + k);
+      let u, v;
+      if (nx >= ny && nx >= nz) {
+        u = y;
+        v = z;
+      } else if (ny >= nz) {
+        u = z;
+        v = x;
+      } else {
+        u = x;
+        v = y;
+      }
+      uv[(i + k) * 2] = u * scale;
+      uv[(i + k) * 2 + 1] = v * scale;
+    }
+  }
+  source.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  return source;
 }
 
 function leafInto(positions, indices, base, tip, width, roll = 0) {
@@ -236,20 +431,20 @@ export function buildLandscape({
   channelSides,
   channelPoints,
   channelOutline,
-  courtyard,
-  shoreSamples = false
+  courtyard
 }) {
   const random = seeded(208816);
   const range = (a, b) => a + random() * (b - a);
   const choose = values => values[Math.floor(random() * values.length)];
   const leafColors = ['#76976c', '#88a774', '#a1b97e', '#afc58e', '#7ea381', '#b6c695'];
-  const rockColors = ['#8e9a91', '#9fa797', '#7f908a', '#aab0a0', '#8f9b8b', '#a8ad99'];
-  const mossColors = ['#708960', '#8d9f6c', '#9caa76', '#7f995f', '#a6b47b'];
-  for (let i = 0; i < 5; i++) {
-    shapes['bankRock' + i] = rockGeometry(314 + i * 17);
-    shapes['pathSlab' + i] = rockGeometry(119 + i * 23, true);
-    if (shoreSamples) shapes['shoreSampleRock' + i] = texturedRockGeometry(shapes['bankRock' + i]);
-  }
+  // Pale weathered limestone. The green growth is painted by the rock shader,
+  // so the stone itself keeps one quiet family of tones.
+  const rockColors = ['#c2c6bb', '#cdd0c5', '#b4bab1', '#d4d5c8', '#bec3b8', '#c8cabd'];
+  const mossColors = ['#c0c4b7', '#c9ccc0', '#b8bdb2', '#d0d1c4', '#c4c7ba'];
+  // Eight distinct boulders and six slabs keep the facade from reading as one
+  // block of stone repeated around the island.
+  for (let i = 0; i < 8; i++) shapes['bankRock' + i] = rockGeometry(314 + i * 37, false, low ? 0 : 1);
+  for (let i = 0; i < 6; i++) shapes['pathSlab' + i] = rockGeometry(119 + i * 23, true, low ? 0 : 1);
   for (let i = 0; i < 3; i++) shapes['shrub' + i] = shrubGeometry(88 + i * 27);
   shapes.rosette = rosetteGeometry(72);
   shapes.fern = rosetteGeometry(438, true);
@@ -341,17 +536,11 @@ export function buildLandscape({
 
   function coastalRock(x, z, size, height, rotation) {
     const y = height * .33;
-    const kind = 'bankRock' + Math.floor(random() * 5);
-    // Only a short stretch at the front receives the trial, leaving adjoining
-    // shoreline available for an in-scene comparison.
-    const surfaceKind = shoreSamples && x > -3.7 && x < 1.8 && z > 3.15
-      ? kind.replace('bankRock', 'shoreSampleRock') : kind;
-    put(surfaceKind, x, y, z, size, height, size * range(.63, .98), choose(rockColors),
-      range(-.10, .10), rotation, range(-.12, .12));
-    if (random() < .82) {
-      put(kind, x + .025, y + height * .36, z - .02, size * .78, height * .14,
-        size * .64, choose(mossColors), 0, rotation);
-    }
+    const kind = 'bankRock' + Math.floor(random() * ROCK_SHAPES);
+    // The growth is painted by the rock shader, so the moss follows the
+    // weathered crown of the stone instead of floating above it.
+    put(kind, x, y, z, size, height, size * range(.63, .98), choose(rockColors),
+      range(-.10, .10), rotation, range(-.12, .12), 1);
   }
   // Separated outcrops and broad shoulders alternate with low planted banks.
   const headlands = [-.32, .29, .78, 1.78, 2.28, 2.85, 3.43, 4.02, 4.78, 5.48];
@@ -517,8 +706,8 @@ export function buildLandscape({
       if (!clearForPlants(x, z, .11)) continue;
       const y = groundHeight(x, z),
         size = range(.16, .27);
-      put('bankRock' + i % 5, x, y + .015, z, size * 1.23, .075, size,
-        choose(mossColors), 0, random() * TAU);
+      put('bankRock' + i % ROCK_SHAPES, x, y + .015, z, size * 1.23, .075, size,
+        choose(mossColors), 0, random() * TAU, 0, .85);
       if (i % 3 === 0) {
         const scale = height * range(.62, 1.13);
         put('shrub' + i % 3, x, y + .012, z, range(.72, 1.08), scale,
@@ -581,8 +770,8 @@ export function buildLandscape({
       scale = range(.25, .58);
     put('rosette', x, y + .01, z, scale, scale * .66, scale,
       choose(leafColors), 0, random() * TAU);
-    if (i % 3 === 0) put('bankRock' + i % 5, x, y + .018, z, scale * .71, .058,
-      scale * .50, choose(mossColors), 0, random() * TAU);
+    if (i % 3 === 0) put('bankRock' + i % ROCK_SHAPES, x, y + .018, z, scale * .71, .058,
+      scale * .50, choose(mossColors), 0, random() * TAU, 0, .8);
   }
 
   // Ivy crosses the broken soil lip in strands of unequal length.
@@ -613,10 +802,10 @@ export function buildLandscape({
     const x = Math.cos(angle) * radius,
       z = Math.sin(angle) * radius;
     const top = GROUND + .02 - i * .145;
-    put('pathSlab' + i % 5, x, top - .075, z, .65, .15, .31,
-      choose(['#aeb8a2', '#bec4ad', '#9caa99']), 0, Math.PI / 2 - angle);
-    if (i < 4) put('bankRock' + i % 5, x, top - .24, z, .55, .39, .28,
-      '#879786', 0, Math.PI / 2 - angle);
+    put('pathSlab' + i % SLAB_SHAPES, x, top - .075, z, .65, .15, .31,
+      choose(['#c6c9bc', '#d0d2c6', '#bcbfb2']), 0, Math.PI / 2 - angle, 0, .22);
+    if (i < 4) put('bankRock' + i % ROCK_SHAPES, x, top - .24, z, .55, .39, .28,
+      '#b9bdb1', 0, Math.PI / 2 - angle, 0, .3);
   }
   return {
     groundHeight,

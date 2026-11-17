@@ -20,7 +20,7 @@ page=page.replace('<link rel="stylesheet" href="./style.css">','<style>'+css+'</
 media={p.name:'data:video/mp4;base64,'+b64encode(p.read_bytes()).decode() for p in (root/'media').glob('*.mp4')}
 model_names=[f'{name}-{tier}.glb' for name in ['stone-bridge','cushion','lantern'] for tier in ['high','low']]
 models={name:'data:model/gltf-binary;base64,'+b64encode((root/'assets/models'/name).read_bytes()).decode() for name in model_names}
-texture_names={'color':'shore-rock-color.webp','normal':'shore-rock-normal.webp'}
+texture_names={'albedo':'rock-albedo.webp','normal':'rock-normal.webp','orm':'rock-orm.webp'}
 textures={key:'data:image/webp;base64,'+b64encode((root/'assets/textures'/name).read_bytes()).decode() for key,name in texture_names.items()}
 bootstrap='<script type="importmap">'+json.dumps({'imports':assets},separators=(',',':'))+'</script><script>globalThis.ISLE_MEDIA='+json.dumps(media,separators=(',',':'))+';globalThis.ISLE_MODELS='+json.dumps(models,separators=(',',':'))+';globalThis.ISLE_TEXTURES='+json.dumps(textures,separators=(',',':'))+'</script><script type="module">import "isle/src/main.js";</script>'
 page=page.replace('<script type="module" src="./src/main.js"></script>',bootstrap)

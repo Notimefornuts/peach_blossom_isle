@@ -1,6 +1,6 @@
 import * as THREE from '../vendor/three.module.js';
 import { loadCourtyardModels } from './model-assets.js';
-import { loadShoreMaterial } from './shore-material.js';
+import { loadRockTextures } from './rock-material.js';
 import {
   OrbitControls
 } from '../vendor/OrbitControls.js';
@@ -138,16 +138,16 @@ const register = (id, obj, anchor, {
     button: null
   });
 };
-const [assets, shoreTextures] = await Promise.all([
+const [assets, rockTextures] = await Promise.all([
   loadCourtyardModels(low),
-  loadShoreMaterial(low)
+  loadRockTextures(renderer.isSoftware ? 1 : Math.min(4, renderer.capabilities.getMaxAnisotropy()))
 ]);
 const ctx = {
     scene: world,
     low,
     register,
     assets,
-    shoreTextures
+    rockTextures
   },
   garden = buildGarden(ctx),
   house = buildHouse(ctx),
