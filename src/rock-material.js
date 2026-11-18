@@ -13,10 +13,16 @@ const sources = globalThis.ISLE_TEXTURES ?? {
 export const ROCK_TINT_GAIN = 1.787;
 
 // Weathering constants. The stone stays a pale limestone and the growth is
-// painted by the shader, so the moss keeps the vivid green of the reference
-// boulders instead of tinting the whole stone.
-const MOSS_TINT = new THREE.Color('#63b532');
+// painted by the shader. The moss family is a low saturation grey green: a
+// lighter colony tone on the crowns, a darker one in the crevices and a pale
+// dried fringe at the border of each patch.
+const MOSS_TINT = new THREE.Color('#7b9070');
+const MOSS_DEEP = new THREE.Color('#5d6d5c');
+const MOSS_FRINGE = new THREE.Color('#98a489');
 const MOSS_GAIN = 1.0;
+// World height of the wet line: below it the stone darkens and turns glossy
+// where the lake laps against the rock foot.
+const WET_TOP = .30;
 const DETAIL = .88;
 const NORMAL_SCALE = 1.35;
 // One texture tile per 0.55 world unit, so the stone keeps a fine grain at the
@@ -63,6 +69,9 @@ const COMMON = /* glsl */`
   varying vec3 vRockWNormal;
   varying float vRockCavity;
   varying vec4 vRockData;
+  uniform vec3 uRockMossDeep;
+  uniform vec3 uRockMossFringe;
+  uniform float uWetTop;
 
   float rockHash( vec3 p ) {
     p = fract( p * 0.3183099 + vec3( 0.71, 0.113, 0.419 ) );
@@ -89,6 +98,8 @@ const COMMON = /* glsl */`
     vec3 w = pow( abs( n ), vec3( 5.0 ) );
     return w / max( w.x + w.y + w.z, 1e-4 );
   }
+  // Shared by the colour and roughness passes: how wet this fragment is.
+  float rockWetAmount;
 `;
 
 export function createRockMaterial(textures, low) {
@@ -108,6 +119,9 @@ export function createRockMaterial(textures, low) {
   material.userData.tintGain = ROCK_TINT_GAIN;
   material.onBeforeCompile = shader => {
     shader.uniforms.uRockMoss = { value: MOSS_TINT };
+    shader.uniforms.uRockMossDeep = { value: MOSS_DEEP };
+    shader.uniforms.uRockMossFringe = { value: MOSS_FRINGE };
+    shader.uniforms.uWetTop = { value: WET_TOP };
     shader.uniforms.uRockMossGain = { value: MOSS_GAIN };
     shader.uniforms.uRockDetail = { value: DETAIL };
     shader.uniforms.uRockNormalScale = { value: NORMAL_SCALE };
@@ -206,37 +220,59 @@ export function createRockMaterial(textures, low) {
         {
           // Growth collects on the upward faces and thins out towards the
           // shaded flanks, exactly where the reference boulders carry it.
-          float rockUp = smoothstep( 0.22, 0.86, rockN.y );
+          float rockUp = smoothstep( 0.20, 0.84, rockN.y );
           // Three patch fields of different scale keep the growth from
           // reading as one solid cap: broad colonies broken by finer clumps.
           float rockPatch = rockNoise( vRockPos * 3.6 + 11.0 );
           float rockClump = rockNoise( vRockPos * 8.4 + 57.0 );
-          float rockMask = smoothstep( 0.34, 0.76,
+          float rockMask = smoothstep( 0.32, 0.74,
             rockBlotch * 0.34 + rockPatch * 0.38 + rockClump * 0.28 );
           float rockMoss = clamp( rockUp * rockMask * vRockData.w * uRockMossGain, 0.0, 1.0 );
-          // The seams between the leaning masses hold the dampest growth.
-          rockMoss = clamp( rockMoss + vRockCavity * 0.55 * vRockData.w, 0.0, 1.0 );
+          // The seams between the leaning masses and thin weathered crack
+          // lines carry growth regardless of slope, so the moss runs from the
+          // crown down into every crevice and joint of the pile.
+          float rockCrack = 1.0 - smoothstep( 0.02, 0.11,
+            abs( rockNoise( vRockPos * 4.8 + 7.0 ) - 0.5 ) );
+          rockCrack *= rockCrack;
+          float rockCrevice = clamp( vRockCavity * 0.90 + rockCrack * 0.50, 0.0, 1.0 );
+          float rockCreviceMask = smoothstep( 0.28, 0.68, rockPatch * 0.5 + rockClump * 0.5 );
+          rockMoss = clamp( rockMoss +
+            rockCrevice * rockCreviceMask * vRockData.w * uRockMossGain * 0.85, 0.0, 1.0 );
+          // Damp streaks seep down from the crown over the flanks.
+          float rockSeep = rockNoise( vec3( vRockPos.x * 5.2, vRockPos.y * 1.7, vRockPos.z * 5.2 ) + 23.0 );
+          rockSeep = smoothstep( 0.54, 0.82, rockSeep ) * ( 1.0 - rockUp ) *
+            smoothstep( 0.05, 0.40, rockN.y + 0.30 );
+          rockMoss = clamp( rockMoss + rockSeep * rockMask * vRockData.w * 0.60, 0.0, 1.0 );
           // A fine grain eats into the edge of the growth, so the moss ends in
           // scattered specks instead of a clean decal edge.
           float rockGrain = rockNoise( vRockPos * 13.0 );
           rockMoss = smoothstep( 0.24, 0.66, rockMoss + ( rockGrain - 0.5 ) * 0.52 );
-          // The growth is a living surface: a little darker in the crevices,
-          // slightly yellow where it is thickest and mottled with fine clumps.
-          vec3 rockMossColor = uRockMoss * mix( 0.58, 1.0, rockOrm.r * ( 1.0 - vRockCavity * .5 ) );
+          // Low saturation grey green: darker in the crevices, a little lighter
+          // where the colonies stand up into the light.
+          vec3 rockMossColor = mix( uRockMossDeep, uRockMoss, smoothstep( 0.15, 0.70, rockUp ) );
+          rockMossColor *= mix( 0.62, 1.0, rockOrm.r * ( 1.0 - vRockCavity * .5 ) );
           float rockMossTone = rockNoise( vRockPos * 4.4 + 31.0 );
-          rockMossColor *= mix( 0.74, 1.18, rockMossTone );
-          rockMossColor *= mix( 0.90, 1.12, rockGrain );
-          // The thin fringe of the growth is paler and more yellow than the
-          // thick patch, which is how moss dries at its border.
-          vec3 rockMossFringe = vec3( 0.62, 0.72, 0.24 );
-          rockMossColor = mix( rockMossFringe, rockMossColor, smoothstep( 0.30, 0.72, rockMoss ) );
+          rockMossColor *= mix( 0.78, 1.16, rockMossTone );
+          rockMossColor *= mix( 0.92, 1.10, rockGrain );
+          // The thin fringe of the growth is paler and greyer than the thick
+          // patch, which is how moss dries at its border.
+          rockMossColor = mix( uRockMossFringe, rockMossColor, smoothstep( 0.30, 0.72, rockMoss ) );
           diffuseColor.rgb = mix( diffuseColor.rgb, rockMossColor, rockMoss );
+          // Wet foot: the stone darkens and turns glossy where the lake laps,
+          // with a noisy edge so the tide line follows the rock, not a plane.
+          rockWetAmount = 1.0 - smoothstep( uWetTop - 0.22, uWetTop + 0.04,
+            vRockPos.y + ( rockNoise( vRockPos * 6.5 ) - 0.5 ) * 0.14 );
+          diffuseColor.rgb *= mix( 1.0, 0.46, rockWetAmount );
+          diffuseColor.rgb = mix( diffuseColor.rgb,
+            diffuseColor.rgb * vec3( 0.80, 0.90, 0.93 ), rockWetAmount * 0.7 );
         }
       `)
       .replace('#include <roughnessmap_fragment>', /* glsl */`
         float roughnessFactor = roughness;
         roughnessFactor *= rockOrm.g;
         roughnessFactor = clamp( roughnessFactor, 0.08, 1.0 );
+        // The wet foot of the stone reads glossy against the dry crown.
+        roughnessFactor = mix( roughnessFactor, 0.17, rockWetAmount * 0.85 );
       `)
       .replace('#include <normal_fragment_maps>', /* glsl */`
         {

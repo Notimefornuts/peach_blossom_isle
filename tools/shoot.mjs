@@ -1,6 +1,13 @@
 // Close-up capture of the shoreline. Usage:
 //   node tools/shoot.mjs <url> <out.png> [width] [height] [waitMs] [zoom] [dragX]
-import { chromium } from '/home/user/.npm/_npx/f0a362733743bae2/node_modules/playwright-core/index.mjs';
+// Resolve playwright from the environment: a local install first, then the
+// shared npx cache used on the authoring machine.
+let chromium;
+try {
+  ({ chromium } = await import('playwright'));
+} catch {
+  ({ chromium } = await import('/home/user/.npm/_npx/f0a362733743bae2/node_modules/playwright-core/index.mjs'));
+}
 
 const url = process.argv[2];
 const out = process.argv[3];
@@ -35,6 +42,6 @@ if (zoom) {
   }
   await page.waitForTimeout(1400);
 }
-await page.screenshot({ path: out });
+await page.screenshot({ path: out, timeout: 180000 });
 if (errors.length) console.log('CONSOLE:\n' + errors.slice(0, 20).join('\n'));
 await browser.close();

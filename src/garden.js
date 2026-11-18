@@ -76,6 +76,19 @@ export function buildGarden({
     bags.get(kind).push([pose.matrix.clone(), tint, moss]);
   }
 
+  // Orientation variant for facade plants: the quaternion comes from the
+  // sampled rock or soil surface, so fronds and vines lie along the slope
+  // instead of standing upright or facing the camera.
+  function putQ(kind, x, y, z, sx, sy, sz, tint, quat, moss = 0) {
+    if (skipCane) return;
+    pose.position.set(x, y, z);
+    pose.scale.set(sx, sy, sz);
+    pose.quaternion.copy(quat);
+    pose.updateMatrix();
+    if (!bags.has(kind)) bags.set(kind, []);
+    bags.get(kind).push([pose.matrix.clone(), tint, moss]);
+  }
+
   function beam(a, b, r, c, kind = 'cylinder', depth = r) {
     if (skipCane) return;
     const diff = b.clone().sub(a);
@@ -106,7 +119,7 @@ export function buildGarden({
   const bridgeSize = assets?.bridge?.bounds.getSize(V());
   courtyard.bridge.width = courtyard.bridge.length * (bridgeSize ? bridgeSize.z / bridgeSize.x : .4086);
   const landscape = buildLandscape({
-    root, low, put, beam, shapes, courtyard,
+    root, low, put, putQ, beam, shapes, courtyard,
     channelSides: sides, channelPoints: ch, channelOutline: courtyard.outline()
   });
   const rill = buildCourtyardWater({ root, courtyard, put, shapes });

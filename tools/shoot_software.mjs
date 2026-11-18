@@ -1,6 +1,11 @@
 // Capture of the CPU fallback renderer (WebGL disabled). Usage:
 //   node tools/shoot_software.mjs <url> <out.png> [width] [height] [waitMs]
-import { chromium } from '/home/user/.npm/_npx/f0a362733743bae2/node_modules/playwright-core/index.mjs';
+let chromium;
+try {
+  ({ chromium } = await import('playwright'));
+} catch {
+  ({ chromium } = await import('/home/user/.npm/_npx/f0a362733743bae2/node_modules/playwright-core/index.mjs'));
+}
 
 const url = process.argv[2];
 const out = process.argv[3];
@@ -17,6 +22,6 @@ page.on('console', m => { if (m.type() === 'error') errors.push('error: ' + m.te
 page.on('pageerror', e => errors.push('pageerror: ' + e.message));
 await page.goto(url, { waitUntil: 'load', timeout: 90000 });
 await page.waitForTimeout(wait);
-await page.screenshot({ path: out });
+await page.screenshot({ path: out, timeout: 240000 });
 if (errors.length) console.log('CONSOLE:\n' + errors.slice(0, 20).join('\n'));
 await browser.close();

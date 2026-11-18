@@ -1,0 +1,76 @@
+<!doctype html>
+<!-- Dev only: close-up bench for the shore rocks and their weathered material.
+     Served by the vite dev server at /tools/rock-preview.html -->
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>岸石材质实验台 · Rock bench</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #cfd8d3; overflow: hidden; }
+  canvas { display: block; }
+  #hud { position: fixed; left: 12px; top: 10px; font: 12px/1.6 sans-serif; color: #37423c; }
+</style>
+</head>
+<body>
+<div id="hud">岸石实验台 · drag to orbit · wheel to zoom</div>
+<script type="module">
+import * as THREE from '../vendor/three.module.js';
+import { OrbitControls } from '../vendor/OrbitControls.js';
+import { rockGeometry } from '../src/landscape.js';
+import { createRockMaterial, loadRockTextures, ROCK_TINT_GAIN } from '../src/rock-material.js';
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(2, devicePixelRatio));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#cfd8d3');
+const camera = new THREE.PerspectiveCamera(38, innerWidth / innerHeight, .1, 100);
+camera.position.set(3.4, 1.5, 4.2);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, .45, 0);
+scene.add(new THREE.HemisphereLight('#e8efe6', '#6f7d6c', 1.05));
+const sun = new THREE.DirectionalLight('#fff2d8', 1.5);
+sun.position.set(4, 7, 3);
+sun.castShadow = true;
+scene.add(sun);
+
+// Water plane at the lake level so the wet foot can be judged.
+const water = new THREE.Mesh(new THREE.PlaneGeometry(60, 60),
+  new THREE.MeshStandardMaterial({ color: '#7fbcb8', roughness: .25, transparent: true, opacity: .82 }));
+water.rotation.x = -Math.PI / 2;
+scene.add(water);
+
+const textures = await loadRockTextures(4);
+const material = createRockMaterial(textures, false);
+const tint = new THREE.Color();
+const colors = ['#c2c6bb', '#cdd0c5', '#b4bab1', '#d4d5c8'];
+const random = (() => { let s = 41; return () => (s = (Math.imul(s, 1664525) + 1013904223) >>> 0, s / 4294967296); })();
+const positions = [[0, 0], [1.7, .3], [-1.6, .5], [.6, -1.7], [-.9, -1.5], [2.4, -1.2]];
+for (let i = 0; i < positions.length; i++) {
+  const geo = rockGeometry(314 + i * 37, false, 1);
+  const mesh = new THREE.InstancedMesh(geo, material, 1);
+  const h = .9 + random() * .4;
+  mesh.position.set(positions[i][0], h * .26, positions[i][1]);
+  mesh.scale.set(.7 + random() * .3, h, .7 + random() * .3);
+  mesh.rotation.y = random() * 6.28;
+  mesh.updateMatrix();
+  mesh.setMatrixAt(0, mesh.matrix);
+  mesh.setColorAt(0, tint.set(colors[i % 4]).multiplyScalar(ROCK_TINT_GAIN));
+  geo.setAttribute('aRockData', new THREE.InstancedBufferAttribute(new Float32Array([random(), random(), 1, .9]), 4));
+  mesh.castShadow = mesh.receiveShadow = true;
+  scene.add(mesh);
+}
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+renderer.setAnimationLoop(() => {
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>

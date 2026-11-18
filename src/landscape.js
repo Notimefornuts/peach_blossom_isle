@@ -25,11 +25,31 @@ function crestHeight(angle) {
   return .57 + .13 * Math.sin(angle * 3 - .4) + .065 * Math.cos(angle * 7 + .5);
 }
 
+// The plateau edge meanders instead of sitting on one concentric offset, so the
+// soil shoulder meets the rock at a different depth all the way around.
+function rimInset(angle) {
+  return .67 * (1 + .16 * Math.sin(angle * 4 + .9) + .09 * Math.sin(angle * 7 + 2.1) +
+    .05 * Math.sin(angle * 11 - .7));
+}
+
+// A slow roll added to crest and shoulder: the top soil swells and dips towards
+// the rim instead of ending in a level cut platform.
+function rimRoll(angle) {
+  return .052 * Math.sin(angle * 5 + 1.7) + .030 * Math.sin(angle * 9 - .6) +
+    .018 * Math.sin(angle * 14 + 2.2);
+}
+
+function rollWeight(distance, rim) {
+  return 1 - THREE.MathUtils.smoothstep(distance, rim * .27, rim);
+}
+
 export function groundHeight(x, z) {
   const angle = Math.atan2(z, x);
   const distance = shoreRadius(angle) - Math.hypot(x, z);
-  const slope = THREE.MathUtils.smoothstep(distance, 0, .66);
-  return THREE.MathUtils.lerp(crestHeight(angle), GROUND, slope);
+  const rim = rimInset(angle);
+  const slope = THREE.MathUtils.smoothstep(distance, 0, rim);
+  const base = THREE.MathUtils.lerp(crestHeight(angle), GROUND, slope);
+  return base + rimRoll(angle) * rollWeight(distance, rim);
 }
 
 function geometry(positions, indices, colors, uv) {
@@ -72,7 +92,16 @@ function noiseField(seed) {
 // One rounded mass of stone. The reference boulders are clusters of these
 // leaning against each other, so the mass is generated on its own and later
 // assembled into a pile.
-function rockLump(random, noise, sides, rings, erode) {
+// opts carries the weathering character of one lump: sedimentary ledges
+// (strata), a sheared cliff flank (shear) and bitten hollows (dents). All of
+// them displace the welded ring vertices, so the silhouette stays continuous.
+function rockLump(random, noise, sides, rings, erode, opts = {}) {
+  const strata = opts.strata ?? 0,
+    strataFreq = opts.strataFreq ?? 8,
+    strataPhase = opts.strataPhase ?? 0,
+    shear = opts.shear ?? 0,
+    shearDir = opts.shearDir ?? [1, 0],
+    dents = opts.dents ?? [];
   const phase = [random() * TAU, random() * TAU, random() * TAU];
   const outline = Array.from({
     length: sides
@@ -101,6 +130,33 @@ function rockLump(random, noise, sides, rings, erode) {
       x += cx * n * erode * 2;
       z += cz * n * erode * 2;
       yy += n * erode * .9;
+      // Sedimentary ledges: horizontal bands that step the silhouette in and
+      // out, the way layered limestone weathers.
+      if (strata) {
+        const band = Math.sin(yy * strataFreq + strataPhase);
+        const ledge = strata * (band > 0 ? band * band : band * .45);
+        x += cx * ledge;
+        z += cz * ledge;
+        yy -= strata * .35 * Math.abs(band);
+      }
+      // A sheared flank: the mass drifts sideways with height, leaving one
+      // steep face and one shallow shoulder.
+      if (shear) {
+        const drift = (yy + .5) * (yy + .5) * shear;
+        x += shearDir[0] * drift;
+        z += shearDir[1] * drift;
+      }
+      // Weathered hollows bitten into the skin.
+      for (const dent of dents) {
+        const dd = Math.hypot(x - dent[0], yy - dent[1], z - dent[2]);
+        const bite = Math.max(0, 1 - dd / dent[3]);
+        if (bite > 0) {
+          const pull = bite * bite * dent[4];
+          x -= cx * pull;
+          z -= cz * pull;
+          yy -= pull * .45;
+        }
+      }
       positions.push(x, yy, z);
     }
   }
@@ -126,6 +182,9 @@ function rockLump(random, noise, sides, rings, erode) {
 export function rockGeometry(seed, slab = false, detail = 1) {
   const random = seeded(seed);
   const noise = noiseField(seed);
+  // Three weathering families so the big stones never share one template:
+  // 0 domed mass, 1 stratified ledge stone, 2 sheared shouldered block.
+  const family = slab ? 0 : seed % 3;
   const sides = slab ? 9 : (detail ? 11 : 9);
   const rings = slab ? [
       [.76, -.28],
@@ -133,6 +192,36 @@ export function rockGeometry(seed, slab = false, detail = 1) {
       [.99, .05],
       [.88, .18],
       [.60, .26]
+    ] : family === 1 ? detail ? [
+      [.62, -.50],
+      [.93, -.34],
+      [1, -.10],
+      [.98, .12],
+      [.90, .30],
+      [.74, .42],
+      [.50, .50]
+    ] : [
+      [.66, -.48],
+      [.95, -.28],
+      [1, -.02],
+      [.93, .22],
+      [.76, .40],
+      [.52, .48]
+    ] : family === 2 ? detail ? [
+      [.55, -.52],
+      [.86, -.34],
+      [.97, -.08],
+      [.94, .18],
+      [.82, .40],
+      [.58, .55],
+      [.34, .63]
+    ] : [
+      [.58, -.50],
+      [.88, -.30],
+      [.97, -.02],
+      [.90, .26],
+      [.66, .48],
+      [.40, .58]
     ] : detail ? [
       [.60, -.50],
       [.91, -.33],
@@ -148,14 +237,36 @@ export function rockGeometry(seed, slab = false, detail = 1) {
       [.90, .28],
       [.62, .47]
     ];
-  const erode = slab ? .055 : .095;
+  const erode = slab ? .055 : .095 * (family === 1 ? .82 : family === 2 ? 1.12 : 1);
+  // Per family weathering character, shared by every lump of this stone so the
+  // pile reads as one broken block of the same bedrock.
+  const shearAngle = random() * TAU;
+  const opts = {
+    dents: Array.from({
+      length: 2 + Math.floor(random() * 2)
+    }, () => {
+      const a = random() * TAU,
+        dy = -.25 + random() * 1.05,
+        rr = Math.sqrt(Math.max(0, 1 - dy * dy));
+      return [Math.cos(a) * rr, dy, Math.sin(a) * rr, .45 + random() * .35, .09 + random() * .13];
+    })
+  };
+  if (family === 1) {
+    opts.strata = .05 + random() * .045;
+    opts.strataFreq = 6.5 + random() * 5;
+    opts.strataPhase = random() * TAU;
+  }
+  if (family === 2) {
+    opts.shear = .10 + random() * .12;
+    opts.shearDir = [Math.cos(shearAngle), Math.sin(shearAngle)];
+  }
   const lumps = [];
   if (slab) {
-    lumps.push({ mass: rockLump(random, noise, sides, rings, erode), scale: [1, 1, 1], offset: [0, 0, 0], spin: 0 });
+    lumps.push({ mass: rockLump(random, noise, sides, rings, erode, opts), scale: [1, 1, 1], offset: [0, 0, 0], spin: 0 });
   } else {
     // The lowest mass carries the pile, the others lean on it.
     lumps.push({
-      mass: rockLump(random, noise, sides, rings, erode),
+      mass: rockLump(random, noise, sides, rings, erode, opts),
       scale: [1, 1, 1],
       offset: [0, 0, 0],
       spin: random() * TAU
@@ -167,7 +278,7 @@ export function rockGeometry(seed, slab = false, detail = 1) {
       const s = .74 + random() * .24;
       const lean = random() * TAU;
       lumps.push({
-        mass: rockLump(random, noise, sides - 1, rings, erode),
+        mass: rockLump(random, noise, sides - 1, rings, erode, opts),
         scale: [s, s * (.82 + random() * .20), s],
         offset: [Math.cos(lean) * (.16 + random() * .30), .26 + random() * .30,
           Math.sin(lean) * (.16 + random() * .30)],
@@ -178,7 +289,7 @@ export function rockGeometry(seed, slab = false, detail = 1) {
       const s = .56 + random() * .22;
       const lean = random() * TAU;
       lumps.push({
-        mass: rockLump(random, noise, sides - 2, rings, erode),
+        mass: rockLump(random, noise, sides - 2, rings, erode, opts),
         scale: [s, s * .88, s],
         offset: [Math.cos(lean) * (.42 + random() * .30), .06 + random() * .22,
           Math.sin(lean) * (.42 + random() * .30)],
@@ -422,10 +533,92 @@ function bloomGeometry() {
   return geometry(positions, indices);
 }
 
+// Facade plants are authored in surface space: +Y is the rock or soil normal
+// and +Z points down the slope. The instance orientation then comes from a
+// basis built on the sampled surface, so fronds and vines lie along the stone
+// instead of facing the camera like decals.
+function cliffFernGeometry(seed) {
+  const random = seeded(seed),
+    positions = [],
+    indices = [];
+  for (let frond = 0; frond < 7; frond++) {
+    const a = frond * 2.39996 + random() * .5;
+    const elev = .30 + random() * .55;
+    const length = .30 + random() * .26;
+    const dir = V(Math.cos(a) * Math.cos(elev), Math.sin(elev), Math.sin(a) * Math.cos(elev));
+    dir.z += .55;
+    dir.normalize();
+    const end = dir.clone().multiplyScalar(length);
+    end.y += .05;
+    let previous = V(0, .012, 0);
+    for (let segment = 1; segment <= 4; segment++) {
+      const u = segment / 4;
+      const point = end.clone().multiplyScalar(u);
+      point.y += Math.sin(u * Math.PI) * .05 + .012;
+      twigInto(positions, indices, previous, point, .005 * (1 - u * .6));
+      previous = point;
+    }
+    for (let j = 1; j <= 6; j++) {
+      const u = j / 7;
+      const base = end.clone().multiplyScalar(u);
+      base.y += Math.sin(u * Math.PI) * .05 + .014;
+      const reach = .10 * Math.sin(u * Math.PI) + .012;
+      for (const side of [-1, 1]) {
+        const tip = base.clone().add(V(Math.cos(a + side * 1.35) * reach, .012,
+          Math.sin(a + side * 1.35) * reach + reach * .55));
+        leafInto(positions, indices, base, tip, reach * .17);
+      }
+    }
+  }
+  return geometry(positions, indices);
+}
+
+function cliffTuftGeometry(seed) {
+  const random = seeded(seed),
+    positions = [],
+    indices = [];
+  for (let blade = 0; blade < 9; blade++) {
+    const a = blade * 2.39996 + random() * .6;
+    const elev = .55 + random() * .80;
+    const length = .16 + random() * .17;
+    const dir = V(Math.cos(a) * Math.cos(elev), Math.sin(elev), Math.sin(a) * Math.cos(elev));
+    dir.z += .35;
+    dir.normalize();
+    const tip = dir.clone().multiplyScalar(length);
+    tip.y += .02;
+    leafInto(positions, indices, V(0, .008, 0), tip, length * .10, random() * TAU);
+  }
+  return geometry(positions, indices);
+}
+
+function cliffVineGeometry(seed) {
+  const random = seeded(seed),
+    positions = [],
+    indices = [];
+  const length = .55 + random() * .35;
+  let previous = V(0, .014, 0);
+  const joints = [];
+  for (let j = 1; j <= 6; j++) {
+    const u = j / 6;
+    const p = V(Math.sin(u * 5 + seed % 7) * .022, .014 + .02 * Math.sin(u * Math.PI), u * length);
+    twigInto(positions, indices, previous, p, .0035 * (1 - u * .55));
+    previous = p;
+    joints.push(p);
+  }
+  joints.forEach((p, j) => {
+    for (const side of j % 2 ? [-1] : [-1, 1]) {
+      const tip = p.clone().add(V(side * .05, .013, .055));
+      leafInto(positions, indices, p, tip, .030);
+    }
+  });
+  return geometry(positions, indices);
+}
+
 export function buildLandscape({
   root,
   low,
   put,
+  putQ,
   beam,
   shapes,
   channelSides,
@@ -453,6 +646,9 @@ export function buildLandscape({
     vineIndices = [];
   leafInto(vinePositions, vineIndices, V(0, 0, 0), V(.03, -.17, .045), .057);
   shapes.vineLeaf = geometry(vinePositions, vineIndices);
+  shapes.cliffFern = cliffFernGeometry(977);
+  shapes.cliffVine = cliffVineGeometry(131);
+  shapes.cliffTuft = cliffTuftGeometry(505);
 
   // A flat inhabited centre meets a sloping, uneven rim, then eroded earth and water.
   const segments = 208;
@@ -460,7 +656,7 @@ export function buildLandscape({
     length: segments
   }, (_, i) => {
     const angle = i / segments * TAU,
-      radius = shoreRadius(angle) - .67;
+      radius = shoreRadius(angle) - rimInset(angle);
     return V(Math.cos(angle) * radius, GROUND, Math.sin(angle) * radius);
   });
   const hole = channelOutline ?? [...channelSides[0], ...channelSides[1].slice().reverse()];
@@ -501,21 +697,46 @@ export function buildLandscape({
   turf.receiveShadow = true;
   root.add(turf);
 
+  const STONY = new THREE.Color('#a9ada2');
   const bandPositions = [],
     bandIndices = [],
     bandColors = [],
+    bandGrid = [
+      [],
+      [],
+      [],
+      [],
+      [],
+      []
+    ],
     tint = new THREE.Color();
   for (let level = 0; level < 6; level++) {
     for (let i = 0; i < segments; i++) {
       const angle = i / segments * TAU;
       const crest = crestHeight(angle);
-      const inset = [.03, -.09, .025, 0, .33, .67][level];
+      const roll = rimRoll(angle);
+      const f = rimInset(angle) / .67;
+      const inset = [.03, -.09, .025, 0, .33 * f, .67 * f][level];
       const radius = shoreRadius(angle) - inset;
-      const heights = [-.15, .055, crest * .46, crest, (crest + GROUND) * .5, GROUND];
-      const y = heights[level] + (level < 3 ? .025 * Math.sin(angle * 16 + level) : 0);
+      // Levels 3 and 4 carry the rolling shoulder; the foot of the facade gets
+      // half of the roll so the whole face undulates around the island.
+      const heights = [-.15, .055, crest * .46, crest + roll,
+        (crest + GROUND) * .5 + roll * .79, GROUND];
+      const y = heights[level] + (level < 3 ? .025 * Math.sin(angle * 16 + level) + roll * .5 : 0);
+      bandGrid[level].push({
+        r: radius,
+        y
+      });
       bandPositions.push(Math.cos(angle) * radius, y, Math.sin(angle) * radius);
       tint.set(['#637d78', '#7f8d7f', '#a09a80', '#989d78', '#97a779', '#a7b08b'][level]);
       tint.multiplyScalar(.92 + .065 * Math.sin(angle * 11 + .6));
+      // Stony mottling on the lower face blends the soil into the rock foot
+      // instead of leaving one even green ramp between the outcrops.
+      if (level < 3) {
+        const mottle = (.5 + .5 * Math.sin(angle * 23.7 + level * 7.3) *
+          Math.sin(angle * 11.1 - level * 3.1 + 1.4)) * (level === 2 ? .55 : 1);
+        tint.lerp(STONY, .22 * mottle);
+      }
       bandColors.push(tint.r, tint.g, tint.b);
       if (level) {
         const a = (level - 1) * segments + i;
@@ -534,30 +755,248 @@ export function buildLandscape({
   bank.castShadow = bank.receiveShadow = true;
   root.add(bank);
 
-  function coastalRock(x, z, size, height, rotation) {
-    const y = height * .33;
-    const kind = 'bankRock' + Math.floor(random() * ROCK_SHAPES);
-    // The growth is painted by the rock shader, so the moss follows the
-    // weathered crown of the stone instead of floating above it.
-    put(kind, x, y, z, size, height, size * range(.63, .98), choose(rockColors),
-      range(-.10, .10), rotation, range(-.12, .12), 1);
+  // ---- surface frames -------------------------------------------------------
+  // Plants on the facade need the local slope: the bank grid is sampled
+  // bilinearly and differentiated to recover normal and downslope directions.
+  function bandSample(angle, level) {
+    const u = (((angle / TAU) % 1) + 1) % 1 * segments;
+    const i0 = Math.floor(u) % segments,
+      i1 = (i0 + 1) % segments,
+      fu = u - Math.floor(u);
+    const l0 = THREE.MathUtils.clamp(Math.floor(level), 0, 5),
+      l1 = THREE.MathUtils.clamp(l0 + 1, 0, 5),
+      fv = THREE.MathUtils.clamp(level - l0, 0, 1);
+    const g = (l, i) => bandGrid[l][i];
+    return {
+      r: THREE.MathUtils.lerp(THREE.MathUtils.lerp(g(l0, i0).r, g(l0, i1).r, fu),
+        THREE.MathUtils.lerp(g(l1, i0).r, g(l1, i1).r, fu), fv),
+      y: THREE.MathUtils.lerp(THREE.MathUtils.lerp(g(l0, i0).y, g(l0, i1).y, fu),
+        THREE.MathUtils.lerp(g(l1, i0).y, g(l1, i1).y, fu), fv)
+    };
   }
-  // Separated outcrops and broad shoulders alternate with low planted banks.
+
+  function bankFrame(angle, level) {
+    const s0 = bandSample(angle, level),
+      s1 = bandSample(angle, level + .02),
+      ca = Math.cos(angle),
+      sa = Math.sin(angle);
+    const dr = (s1.r - s0.r) / .02,
+      dy = (s1.y - s0.y) / .02;
+    // Derivative towards the higher level points inwards and up; the outward
+    // facing normal and the downslope direction follow from it.
+    const n = V(dy * ca, -dr, dy * sa);
+    if (n.lengthSq() < 1e-8) n.set(ca, 1, sa);
+    n.normalize();
+    if (n.y < 0) n.negate();
+    const d = V(-dr * ca, -dy, -dr * sa);
+    if (d.lengthSq() < 1e-8) d.set(ca, 0, sa);
+    d.normalize();
+    if (d.y > 0) d.negate();
+    return {
+      x: ca * s0.r,
+      y: s0.y,
+      z: sa * s0.r,
+      n,
+      d
+    };
+  }
+
+  const SURF_UP = V(0, 1, 0),
+    spinQ = new THREE.Quaternion();
+
+  function orientQuat(normal, down) {
+    const y = normal.clone().normalize();
+    const z = down.clone().addScaledVector(y, -down.dot(y));
+    if (z.lengthSq() < 1e-6) z.set(0, 0, 1).addScaledVector(y, -y.z);
+    z.normalize();
+    const x = new THREE.Vector3().crossVectors(y, z);
+    return new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, y, z));
+  }
+
+  // Place a plant instance lying on a sampled surface: its local +Y follows the
+  // normal and its local +Z runs down the slope.
+  function putSurf(kind, x, y, z, s, tint, normal, down, spin, sy = s, moss = 0) {
+    const q = orientQuat(normal, down).multiply(spinQ.setFromAxisAngle(SURF_UP, spin));
+    putQ(kind, x, y, z, s, sy, s, tint, q.clone(), moss);
+  }
+
+  // The front steps stay the one clear entrance from the courtyard to the
+  // water: no outcrop, reef or facade plant may sit in their wedge.
+  const STAIR_ANGLE = 1.24;
+
+  function stairWedge(angle, radius) {
+    const d = Math.abs(((angle - STAIR_ANGLE + Math.PI) % TAU + TAU) % TAU - Math.PI);
+    return d < .27 && radius > shoreRadius(angle) - 1.15;
+  }
+
+  // The imported stone arch bridge is a landmark the default camera sees
+  // across the front shore. Outcrops inside its sightline stay low, so the
+  // bridge keeps rising above the bank instead of hiding behind a tall stone.
+  const BRIDGE_VIEW = 1.83;
+
+  function dimBank(angle) {
+    const d = Math.abs(((angle - BRIDGE_VIEW + Math.PI) % TAU + TAU) % TAU - Math.PI);
+    return d < .30;
+  }
+
+  function coastalRock(x, z, size, height, rotation, sink = .26, lean = 0, leanDir = 0) {
+    const y = height * sink;
+    const kind = 'bankRock' + Math.floor(random() * ROCK_SHAPES);
+    // Leaning tilts the crown towards leanDir so middling masses key into the
+    // dominant stone instead of standing upright beside it.
+    const dx = Math.cos(leanDir),
+      dz = Math.sin(leanDir);
+    put(kind, x, y, z, size, height, size * range(.63, .98), choose(rockColors),
+      dz * lean, rotation, -dx * lean, 1);
+    return {
+      x,
+      z,
+      size,
+      height
+    };
+  }
+  // Outcrop clusters: one dominant mass, middling stones keyed into its foot
+  // and half buried keystones. Broad planted banks alternate between them.
   const headlands = [-.32, .29, .78, 1.78, 2.28, 2.85, 3.43, 4.02, 4.78, 5.48];
-  for (const angle of headlands) {
-    const radius = shoreRadius(angle);
-    const size = range(.47, .72);
-    coastalRock(Math.cos(angle) * radius, Math.sin(angle) * radius, size, range(.72, 1.11), angle);
-    for (let j = 0; j < 5; j++) {
-      const a = angle + range(-.19, .19),
-        r = shoreRadius(a) + range(-.16, .24);
-      coastalRock(Math.cos(a) * r, Math.sin(a) * r, size * range(.28, .63), range(.26, .60), a);
+  const outcrops = [];
+  // Smaller satellite clusters between the headlands keep the rock band
+  // continuous without turning it into one even wall of stone.
+  const satellites = [];
+  for (let i = 0; i < headlands.length; i++) {
+    const a = headlands[i],
+      b = headlands[(i + 1) % headlands.length];
+    const span = (((b - a) % TAU) + TAU) % TAU;
+    if (random() < .72) satellites.push(a + span * (.38 + random() * .24));
+  }
+  for (const angle of [...headlands, ...satellites]) {
+    const dominant = headlands.includes(angle);
+    // Inside the bridge sightline the cluster shrinks to a low planted bank.
+    const dim = dimBank(angle);
+    const radius = shoreRadius(angle) - range(-.04, .14);
+    const size = dim ? range(.26, .40) : dominant ? range(.60, .86) : range(.36, .54),
+      height = dim ? range(.38, .56) : dominant ? range(.92, 1.30) : range(.55, .84);
+    const cx = Math.cos(angle) * radius,
+      cz = Math.sin(angle) * radius;
+    outcrops.push(coastalRock(cx, cz, size, height, angle + range(-.5, .5), .24));
+    const mids = dominant ? 1 + (random() < .65 ? 1 : 0) : (random() < .55 ? 1 : 0);
+    for (let m = 0; m < mids; m++) {
+      const a2 = angle + (m ? -1 : 1) * range(.10, .22);
+      const r2 = shoreRadius(a2) + range(-.30, .06);
+      if (stairWedge(a2, r2)) continue;
+      const x2 = Math.cos(a2) * r2,
+        z2 = Math.sin(a2) * r2;
+      const leanDir = Math.atan2(cz - z2, cx - x2);
+      const dimMid = dimBank(a2);
+      const mid = coastalRock(x2, z2,
+        dimMid ? range(.24, .36) : size * range(.44, .64),
+        dimMid ? range(.36, .52) : height * range(.46, .72),
+        a2 + range(-.6, .6), .30, range(.10, .24), leanDir);
+      mid.leanDir = leanDir;
+      outcrops.push(mid);
+    }
+    const keys = (dominant ? 4 : 2) + Math.floor(random() * 3);
+    for (let k = 0; k < keys; k++) {
+      const a3 = angle + range(-.32, .32);
+      const r3 = shoreRadius(a3) + range(-.12, .34);
+      if (stairWedge(a3, r3)) continue;
+      coastalRock(Math.cos(a3) * r3, Math.sin(a3) * r3, size * range(.16, .34),
+        height * range(.16, .34), random() * TAU, .16, range(0, .18), random() * TAU);
+    }
+    // Tufts and small ferns on the crown and shoulders of the dominant mass.
+    const crowns = (dominant ? 2 : 1) + Math.floor(random() * 3);
+    for (let c = 0; c < crowns; c++) {
+      const a4 = random() * TAU,
+        rr = range(.15, .62) * size;
+      const nx = Math.cos(a4) * rr,
+        nz = Math.sin(a4) * rr;
+      const n = V(nx * 1.7, range(.55, 1.05), nz * 1.7).normalize();
+      const d = V(nx, 0, nz);
+      if (d.lengthSq() < 1e-6) d.set(1, 0, 0);
+      d.normalize();
+      putSurf(random() < .45 ? 'cliffFern' : 'cliffTuft',
+        cx + nx, height * .26 + height * range(.28, .46), cz + nz, range(.5, .95),
+        choose(leafColors), n, d, random() * TAU);
     }
   }
   for (let i = 0; i < 50; i++) {
     const angle = random() * TAU,
       radius = shoreRadius(angle) + range(-.12, .18);
-    coastalRock(Math.cos(angle) * radius, Math.sin(angle) * radius, range(.10, .21), range(.12, .27), angle);
+    if (stairWedge(angle, radius)) continue;
+    coastalRock(Math.cos(angle) * radius, Math.sin(angle) * radius, range(.10, .21),
+      range(.12, .27), angle, .18);
+  }
+  // Reef stones sit in the lake along the coves, so the rock foot disappears
+  // into the water instead of stopping above it.
+  for (let i = 0; i < 16; i++) {
+    const angle = random() * TAU,
+      radius = shoreRadius(angle) + range(.12, .46);
+    if (stairWedge(angle, radius)) continue;
+    put('bankRock' + Math.floor(random() * ROCK_SHAPES),
+      Math.cos(angle) * radius, range(-.12, -.02), Math.sin(angle) * radius,
+      range(.26, .52), range(.16, .30), range(.24, .46), choose(rockColors),
+      range(-.08, .08), random() * TAU, range(-.08, .08), .55);
+  }
+
+  // ---- facade planting ------------------------------------------------------
+  // Ferns, tufts and trailing vines keyed to the bank slope. A slow gate keeps
+  // them in patches so the rock silhouette stays legible between them.
+  const facadeBudget = low ? 100 : 210;
+  let facadePlaced = 0;
+  for (let n = 0; n < facadeBudget * 4 && facadePlaced < facadeBudget; n++) {
+    const angle = random() * TAU;
+    const gate = .5 * Math.sin(angle * 2.7 + .6) + .3 * Math.sin(angle * 5.3 + 2.2) +
+      .2 * Math.sin(angle * 11.7 - 1.1);
+    if (gate < -.05) continue;
+    if (stairWedge(angle, shoreRadius(angle))) continue;
+    const level = range(1.25, 4.85);
+    const f = bankFrame(angle, level);
+    const roll = random();
+    // Vines hang from the crest lip and trail the mid face; ferns and tufts
+    // hold the seams and the planted shoulder.
+    const kind = level > 4.3 ? (roll < .38 ? 'cliffVine' : roll < .72 ? 'cliffTuft' : 'cliffFern') :
+      level > 3.6 ? (roll < .55 ? 'cliffTuft' : 'cliffFern') :
+      roll < .40 ? 'cliffVine' : roll < .70 ? 'cliffFern' : 'cliffTuft';
+    const sc = kind === 'cliffVine' ? range(.8, 1.4) :
+      kind === 'cliffFern' ? range(.5, .92) : range(.6, 1.15);
+    putSurf(kind, f.x + f.n.x * .02, f.y + .012 + f.n.y * .02, f.z + f.n.z * .02, sc,
+      choose(leafColors), f.n, f.d, random() * TAU);
+    facadePlaced++;
+  }
+  // Mossy flat stones half sunk into the shoulder: they carry the growth from
+  // the soil lip down into the rock face and break the even earth ramp.
+  for (let n = 0; n < (low ? 26 : 46); n++) {
+    const angle = random() * TAU;
+    if (stairWedge(angle, shoreRadius(angle))) continue;
+    const f = bankFrame(angle, range(2.4, 4.5));
+    const s = range(.22, .46);
+    putQ('bankRock' + Math.floor(random() * ROCK_SHAPES),
+      f.x - f.n.x * .04, f.y + .02, f.z - f.n.z * .04,
+      s, range(.05, .09), s * range(.7, .95), choose(mossColors),
+      orientQuat(f.n, f.d).clone(), .95);
+  }
+  // Soil and rock junction: tufts along the meandering plateau rim.
+  for (let n = 0; n < 90; n++) {
+    const angle = random() * TAU;
+    const gate = .5 * Math.sin(angle * 3.3 + 2.9) + .5 * Math.sin(angle * 6.1 - .4);
+    if (gate < -.1) continue;
+    const radius = shoreRadius(angle) - rimInset(angle) * range(.86, 1.06);
+    if (stairWedge(angle, radius)) continue;
+    const x = Math.cos(angle) * radius,
+      z = Math.sin(angle) * radius;
+    putSurf(random() < .7 ? 'cliffTuft' : 'cliffFern', x, groundHeight(x, z) + .008, z,
+      range(.55, 1.0), choose(leafColors),
+      V(Math.cos(angle) * .42, 1, Math.sin(angle) * .42),
+      V(Math.cos(angle), 0, Math.sin(angle)), random() * TAU);
+  }
+  // Crevice ferns where a middling mass leans into its dominant stone.
+  for (const o of outcrops) {
+    if (o.leanDir === undefined || random() < .35) continue;
+    const dx = Math.cos(o.leanDir),
+      dz = Math.sin(o.leanDir);
+    const x = o.x + dx * o.size * .72,
+      z = o.z + dz * o.size * .72;
+    putSurf('cliffFern', x, o.height * range(.30, .52), z, range(.45, .75),
+      choose(leafColors), V(dx * .55, 1, dz * .55), V(dx, 0, dz), random() * TAU);
   }
 
   const paths = courtyard.paths;
@@ -779,7 +1218,7 @@ export function buildLandscape({
     for (let strand = 0; strand < (low ? 5 : 8); strand++) {
       const angle = centerAngle + range(-.11, .11),
         radius = shoreRadius(angle);
-      const top = crestHeight(angle) + .045,
+      const top = groundHeight(Math.cos(angle) * radius, Math.sin(angle) * radius) + .045,
         length = range(.25, .61);
       let previous = V(Math.cos(angle) * (radius - .05), top, Math.sin(angle) * (radius - .05));
       for (let j = 0; j < 7; j++) {

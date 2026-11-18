@@ -306,7 +306,11 @@ function shade(r, lights, shadow) {
     // paints it, so both paths show the same green caps.
     let cr = cr0, cg = cg0, cb = cb0;
     if (r.rockGrowth !== undefined) {
-      const up = clamp((ny - .22) / .64, 0, 1);
+      const smooth = (a, b, v) => {
+        const t = clamp((v - a) / (b - a), 0, 1);
+        return t * t * (3 - 2 * t);
+      };
+      const up = smooth(.20, .84, ny);
       const cavity = r.cavity ? r.cavity[i / 3] : 0;
       const blotch = rockNoise(x * 1.45, y * 1.45, z * 1.45);
       const patch = rockNoise(x * 3.6 + 11, y * 3.6 + 11, z * 3.6 + 11);
@@ -315,18 +319,38 @@ function shade(r, lights, shadow) {
       // The same three scale blend as the GPU shader decides where the growth
       // can take hold.
       const field = blotch * .34 + patch * .38 + clump * .28;
-      let mask = clamp((field - .38) / (.64 - .38), 0, 1);
-      mask = mask * mask * (3 - 2 * mask);
-      let moss = clamp(up * up * (3 - 2 * up) * mask * r.rockGrowth, 0, 1);
-      moss = clamp(moss + cavity * .5 * r.rockGrowth, 0, 1);
-      moss = clamp((moss + (grain - .5) * .34 - .34) / (.58 - .34), 0, 1);
-      moss = moss * moss * (3 - 2 * moss);
+      const mask = smooth(.32, .74, field);
+      let moss = clamp(up * mask * r.rockGrowth, 0, 1);
+      // Seams and weathered crack lines carry growth regardless of slope.
+      const crackN = rockNoise(x * 4.8 + 7, y * 4.8 + 7, z * 4.8 + 7);
+      let crack = 1 - smooth(.02, .11, Math.abs(crackN - .5));
+      crack *= crack;
+      const crevice = clamp(cavity * .9 + crack * .5, 0, 1);
+      moss = clamp(moss + crevice * smooth(.28, .68, patch * .5 + clump * .5) *
+        r.rockGrowth * .85, 0, 1);
+      // Damp streaks seeping down from the crown.
+      const seep = smooth(.54, .82, rockNoise(x * 5.2 + 23, y * 1.7 + 23, z * 5.2 + 23)) *
+        (1 - up) * smooth(.05, .40, ny + .30);
+      moss = clamp(moss + seep * mask * r.rockGrowth * .6, 0, 1);
+      moss = smooth(.24, .66, moss + (grain - .5) * .52);
       // The CPU path applies the albedo map after the shading, so the growth
-      // is pre-divided by the mean of that map to land on the same green.
-      const tone = (.58 + .42 * (1 - cavity)) * 1.787;
-      cr = cr0 * (1 - moss) + .155 * moss * tone;
-      cg = cg0 * (1 - moss) + .539 * moss * tone;
-      cb = cb0 * (1 - moss) + .052 * moss * tone;
+      // is pre-divided by the mean of that map to land on the same grey green.
+      const toneMix = smooth(.15, .70, up);
+      const tone = (.62 + .38 * (1 - cavity)) * 1.787 *
+        (.78 + .38 * rockNoise(x * 4.4 + 31, y * 4.4 + 31, z * 4.4 + 31)) *
+        (.92 + .18 * grain);
+      const fringe = smooth(.30, .72, moss);
+      const mr = (.132 + (.250 - .132) * toneMix) * (1 - fringe) + .382 * fringe;
+      const mg = (.186 + (.345 - .186) * toneMix) * (1 - fringe) + .434 * fringe;
+      const mb = (.160 + (.205 - .160) * toneMix) * (1 - fringe) + .320 * fringe;
+      cr = cr0 * (1 - moss) + mr * moss * tone;
+      cg = cg0 * (1 - moss) + mg * moss * tone;
+      cb = cb0 * (1 - moss) + mb * moss * tone;
+      // Wet foot below the tide line, matching the GPU shader's darkening.
+      const wet = 1 - smooth(.06, .30, y + (rockNoise(x * 6.5, y * 6.5, z * 6.5) - .5) * .14);
+      cr *= 1 - .535 * wet;
+      cg *= 1 - .498 * wet;
+      cb *= 1 - .487 * wet;
     }
     let nd = nx * dir.x + ny * dir.y + nz * dir.z;
     if (blossoms) nd = clamp(.39 + .30 * Math.abs(nd) + .22 * (y - 4), .16, 1);

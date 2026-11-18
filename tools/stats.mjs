@@ -1,7 +1,12 @@
 // Counts the real draw calls, triangles and texture memory of the live scene by
 // patching the WebGL context before the page loads. Usage:
 //   node tools/stats.mjs <url>
-import { chromium } from '/home/user/.npm/_npx/f0a362733743bae2/node_modules/playwright-core/index.mjs';
+let chromium;
+try {
+  ({ chromium } = await import('playwright'));
+} catch {
+  ({ chromium } = await import('/home/user/.npm/_npx/f0a362733743bae2/node_modules/playwright-core/index.mjs'));
+}
 
 const url = process.argv[2];
 const browser = await chromium.launch({
